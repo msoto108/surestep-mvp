@@ -7,7 +7,7 @@ import type {
   PackStep,
   RunContext,
   ConditionMapFn,
-} from "../../../app/runner/types";
+} from "../../runner/types";
 
 // ─── Helper ─────────────────────────────────────────────────
 
