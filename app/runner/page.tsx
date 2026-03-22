@@ -167,7 +167,7 @@ function HintDrawer({ hint }: { hint: string }) {
 }
 
 const pack = HVAC_COOLING_PACK;
-type Screen = "INTRO" | "ROLE" | "COMPLAINT" | "DIAGNOSTIC" | "READY" | "DATA_NEEDED" | "REPORT" | "EMERGENCY" | "SAFETY_CLARIFY";
+type Screen = "INTRO" | "ROLE" | "COMPLAINT" | "JOB_INFO" | "DIAGNOSTIC" | "READY" | "DATA_NEEDED" | "REPORT" | "EMERGENCY" | "SAFETY_CLARIFY";
 
 export default function RunnerPage() {
   const [screen, setScreen] = useState<Screen>("INTRO");
