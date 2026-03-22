@@ -231,7 +231,14 @@ export default function RunnerPage() {
 
   function startSession(role: UserRole, capability: Capability) {
     const newRun: Run = {
-      id: generateId(), packId: pack.id, complaintId: "", phase: "IN_PROGRESS",
+      id: generateId(), packId: pack.id, complaintId: "", complaintIds: [], phase: "IN_PROGRESS",
+```
+
+PRESS **COMMAND + S** TO SAVE. THEN IN TERMINAL:
+```
+GIT ADD .
+GIT COMMIT -M "FIX COMPLAINTIDS IN STARTSESSION"
+GIT PUSH
       role, capability, evidenceState: "NONE", primaryCondition: null, secondaryCondition: null,
       currentStepId: null, determinationLock: "LOCKED", safetyState: "NORMAL",
       startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completedAt: null, jobInfo: null,
