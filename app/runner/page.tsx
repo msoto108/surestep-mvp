@@ -229,7 +229,7 @@ export default function RunnerPage() {
       id: generateId(), packId: pack.id, complaintId: "", phase: "IN_PROGRESS",
       role, capability, evidenceState: "NONE", primaryCondition: null, secondaryCondition: null,
       currentStepId: null, determinationLock: "LOCKED", safetyState: "NORMAL",
-      startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completedAt: null,
+      startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completedAt: null, jobInfo: null,
     };
     setRun(newRun);
     setEvidenceLog([]);
