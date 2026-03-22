@@ -12,6 +12,7 @@ import {
   computePhase,
 } from "./engine";
 import { generateReports } from "./reports";
+import { generatePDF } from "./pdf";
 import type {
   Run,
   Evidence,
@@ -563,6 +564,7 @@ if (screen === "JOB_INFO") {
             </div>
           )}
         </Card>
+        <div className="mt-3"><GhostBtn onClick={() => generatePDF(reports, jobInfo)}>Download PDF report</GhostBtn></div>
         <div className="mt-3"><PrimaryBtn onClick={reset}>Start new session →</PrimaryBtn></div>
       </Shell>
     );
