@@ -34,7 +34,7 @@ export interface Run {
   safetyState: SafetyState;
   startedAt: string;
   updatedAt: string;
-  completedAt: string | null;
+  completedAt: string | null; jobInfo: JobInfo | null;
 }
 
 export type EvidenceSourceType =
@@ -175,4 +175,14 @@ export interface PersistedSession {
   run: Run;
   evidenceLog: Evidence[];
   reports: RunReports | null;
+}
+
+export interface JobInfo {
+  technicianName: string;
+  companyName: string;
+  jobSiteAddress: string;
+  equipmentType: string;
+  equipmentMake: string;
+  equipmentModel: string;
+  serialNumber: string;
 }
