@@ -23,6 +23,7 @@ export interface Run {
   id: string;
   packId: string;
   complaintId: string;
+  complaintIds: string[];  
   phase: RunPhase;
   role: UserRole;
   capability: Capability;
@@ -120,6 +121,7 @@ export interface PackDefinition {
   promotionThresholds: PromotionThresholds;
   minimumEvidencePaths: Record<string, string[]>;
   tieBreakPriority: string[];
+  downstreamEffects: Record<string, string[]>;
   reportTemplates: PackReportTemplates;
 }
 

@@ -59,7 +59,9 @@ export function generateReports(
   run: Run,
   evidenceLog: Evidence[],
   conditionScores: Record<string, number>,
-  pack: PackDefinition
+  pack: PackDefinition,
+  rootCause: string | null = null,
+  downstreamEffects: string[] = []
 ): RunReports {
   const now = new Date().toISOString();
   const complaintLabel =
@@ -113,7 +115,9 @@ export function generateReports(
   const evidenceCount = evidenceLog.length;
   const userFacing: UserFacingReport = {
     title: pack.reportTemplates.userTitle,
-    observation: `System evaluated for: ${complaintLabel}.`,
+    observation: rootCause
+      ? `Root cause identified: ${pack.reportTemplates.conditionLabels[rootCause] ?? rootCause}.${downstreamEffects.length > 0 ? " Downstream effects: " + downstreamEffects.join(", ") + "." : ""}`
+      : `System evaluated for: ${complaintLabel}.`,
     evidenceSummary: `${evidenceCount} data point${evidenceCount !== 1 ? "s" : ""} collected during evaluation.`,
     primaryFinding: `Primary indication: ${primaryLabel}.`,
     secondaryFinding: secondaryLabel

@@ -202,3 +202,46 @@ export function computePhase(
   }
   return "IN_PROGRESS";
 }
+
+export function getNextRequiredStepMulti(
+  pack: PackDefinition,
+  complaintIds: string[],
+  ctx: RunContext
+): PackStep | null {
+  for (const complaintId of complaintIds) {
+    const steps = pack.steps[complaintId] ?? [];
+    const freshCtx = { ...ctx, complaintId };
+    const next = getNextRequiredStep(steps, freshCtx);
+    if (next) return next;
+  }
+  return null;
+}
+
+export function computeDeterminationLockMulti(
+  pack: PackDefinition,
+  complaintIds: string[],
+  evidenceLog: Evidence[],
+  ctx: RunContext
+): DeterminationLock {
+  for (const complaintId of complaintIds) {
+    const lock = computeDeterminationLock(pack, complaintId, evidenceLog, { ...ctx, complaintId });
+    if (lock === "LOCKED") return "LOCKED";
+  }
+  return "UNLOCKED";
+}
+
+export function computeRootCauseAndEffects(
+  pack: PackDefinition,
+  complaintIds: string[],
+  primaryCondition: string | null
+): { rootCause: string | null; downstreamEffects: string[] } {
+  if (!primaryCondition) return { rootCause: null, downstreamEffects: [] };
+  
+  const downstream = pack.downstreamEffects[primaryCondition] ?? [];
+  const effects = complaintIds.filter((id) => downstream.includes(id));
+  const complaintLabels = effects.map(
+    (id) => pack.complaintCategories.find((c) => c.id === id)?.label ?? id
+  );
+
+  return { rootCause: primaryCondition, downstreamEffects: complaintLabels };
+}

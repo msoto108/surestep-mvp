@@ -441,7 +441,16 @@ export const HVAC_COOLING_PACK: PackDefinition = {
     "Drainage",
     "Electrical",
     "Refrigerant System",
-  ],
+],
+  downstreamEffects: {
+    "Refrigerant System": ["no_cooling_at_all", "runs_not_cold", "short_cycling"],
+    "Electrical": ["system_dead", "no_cooling_at_all", "breaker_trips"],
+    "Airflow": ["no_airflow", "runs_not_cold", "short_cycling"],
+    "Drainage": ["water_float"],
+    "Control System": ["no_cooling_at_all", "system_dead"],
+    "Mechanical": ["no_cooling_at_all", "no_airflow"],
+    "Unknown": [],
+  },
   reportTemplates: {
     technicalTitle: "HVAC Cooling System — Field Diagnostic Report",
     userTitle: "Cooling System Evaluation Summary",

@@ -10,6 +10,9 @@ import {
   computeEvidenceState,
   computeDeterminationLock,
   computePhase,
+  getNextRequiredStepMulti,
+  computeDeterminationLockMulti,
+  computeRootCauseAndEffects,
 } from "./engine";
 import { generateReports } from "./reports";
 import { generatePDF } from "./pdf";
@@ -178,7 +181,7 @@ export default function RunnerPage() {
   const [pendingStep, setPendingStep] = useState<PackStep | null>(null);
   const [pendingValue, setPendingValue] = useState<string | null>(null);
   const [reportTab, setReportTab] = useState<"user" | "technical">("user");
-  const [selectedRole, setSelectedRole] = useState<UserRole | null>("TECHNICIAN"); const [jobInfo, setJobInfo] = useState<import("./types").JobInfo | null>(null); const [form, setForm] = useState({ technicianName: "", companyName: "", jobSiteAddress: "", equipmentType: "", equipmentMake: "", equipmentModel: "", serialNumber: "" });
+  const [selectedRole, setSelectedRole] = useState<UserRole | null>("TECHNICIAN"); const [jobInfo, setJobInfo] = useState<import("./types").JobInfo | null>(null); const [complaintIds, setComplaintIds] = useState<string[]>([]); const [form, setForm] = useState({ technicianName: "", companyName: "", jobSiteAddress: "", equipmentType: "", equipmentMake: "", equipmentModel: "", serialNumber: "" });
 
   useEffect(() => {
     const saved = loadSession();
@@ -207,7 +210,8 @@ export default function RunnerPage() {
 
   const currentStep = useMemo(() => {
     if (!run || !ctx) return null;
-    return getNextRequiredStep(pack.steps[run.complaintId] ?? [], ctx);
+    const ids = run.complaintIds?.length ? run.complaintIds : [run.complaintId];
+    return getNextRequiredStepMulti(pack, ids, ctx);
   }, [run, ctx]);
 
   function refreshRun(baseRun: Run, log: Evidence[]): Run {
@@ -218,8 +222,9 @@ export default function RunnerPage() {
     const primary = getPrimaryCondition(scores, pack.tieBreakPriority);
     const secondary = getSecondaryCondition(scores, primary, pack.tieBreakPriority);
     const evidenceState = computeEvidenceState(scores, primary, pack.promotionThresholds);
-    const determinationLock = computeDeterminationLock(pack, baseRun.complaintId, log, freshCtx);
-    const nextStep = getNextRequiredStep(pack.steps[baseRun.complaintId] ?? [], freshCtx);
+    const ids = baseRun.complaintIds?.length ? baseRun.complaintIds : [baseRun.complaintId];
+    const determinationLock = computeDeterminationLockMulti(pack, ids, log, freshCtx);
+    const nextStep = getNextRequiredStepMulti(pack, ids, freshCtx);
     const phase = computePhase(determinationLock, nextStep, baseRun.capability, pack, baseRun.complaintId, log, freshCtx);
     return { ...baseRun, phase, evidenceState, primaryCondition: primary, secondaryCondition: secondary, currentStepId: nextStep?.id ?? null, determinationLock, updatedAt: new Date().toISOString() };
   }
@@ -270,7 +275,9 @@ export default function RunnerPage() {
   function finalize(inconclusive = false) {
     if (!run) return;
     const finalRun = { ...run, evidenceState: inconclusive ? "INCONCLUSIVE" as const : run.evidenceState, completedAt: new Date().toISOString() };
-    const r = generateReports(finalRun, evidenceLog, conditionScores, pack);
+    const ids = finalRun.complaintIds?.length ? finalRun.complaintIds : [finalRun.complaintId];
+    const { rootCause, downstreamEffects } = computeRootCauseAndEffects(pack, ids, finalRun.primaryCondition);
+    const r = generateReports(finalRun, evidenceLog, conditionScores, pack, rootCause, downstreamEffects);
     setRun(finalRun); setReports(r); saveSession(finalRun, evidenceLog, r); setScreen("REPORT");
   }
 
@@ -393,17 +400,43 @@ if (screen === "JOB_INFO") {
       <Shell>
         <Card>
           <TopBar />
-          <p className="text-xs font-mono uppercase text-zinc-400 mb-2">Primary complaint</p>
-          <p className="text-base font-mono text-white mb-6">Select the reported problem.</p>
-          <div className="flex flex-col gap-2">
+          <p className="text-xs font-mono uppercase text-zinc-400 mb-2">Presenting symptoms</p>
+          <p className="text-base font-mono text-white mb-2">Select all symptoms present.</p>
+          <p className="text-xs font-mono text-zinc-400 mb-6">Select one or more then tap Continue.</p>
+          <div className="flex flex-col gap-2 mb-6">
             {pack.complaintCategories.map((cat) => (
-              <button key={cat.id} onClick={() => selectComplaint(cat.id)}
-                className="w-full text-left px-4 py-4 border border-zinc-600 text-white font-mono text-sm active:border-zinc-400 active:bg-zinc-700 transition-colors">
+              <button
+                key={cat.id}
+                onClick={() => setComplaintIds((prev) =>
+                  prev.includes(cat.id)
+                    ? prev.filter((id) => id !== cat.id)
+                    : [...prev, cat.id]
+                )}
+                className={`w-full text-left px-4 py-4 border font-mono text-sm transition-colors ${
+                  complaintIds.includes(cat.id)
+                    ? "border-white bg-zinc-700 text-white"
+                    : "border-zinc-600 text-white"
+                }`}
+              >
                 {cat.label}
                 {cat.description && <span className="block text-sm text-zinc-400 mt-0.5">{cat.description}</span>}
               </button>
             ))}
           </div>
+          <PrimaryBtn
+            disabled={complaintIds.length === 0}
+            onClick={() => {
+              if (complaintIds.length === 0) return;
+              const primaryId = complaintIds[0];
+              if (!run) return;
+              const updated = { ...run, complaintId: primaryId, complaintIds, updatedAt: new Date().toISOString() };
+              setRun(updated);
+              saveSession(updated, evidenceLog, null);
+              setScreen("DIAGNOSTIC");
+            }}
+          >
+            Continue →
+          </PrimaryBtn>
         </Card>
       </Shell>
     );
