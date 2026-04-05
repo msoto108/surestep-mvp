@@ -1,5 +1,6 @@
 // ============================================================
-// Pack: HVAC / Cooling v1
+// Pack: HVAC / Cooling v2
+// Built from real field diagnostic process — MyLifetime HVAC
 // ============================================================
 
 import type {
@@ -15,6 +16,14 @@ function ev(ctx: RunContext, tag: string): string | undefined {
   return ctx.evidence[tag];
 }
 
+function capacitorFailed(ctx: RunContext): boolean {
+  const reading = ev(ctx, "outdoor.capacitor.reading");
+  return (
+    reading === "Below spec" ||
+    reading === "Open — no reading"
+  );
+}
+
 // ─── Condition Names ────────────────────────────────────────
 
 const C = {
@@ -27,103 +36,488 @@ const C = {
   UNKNOWN: "Unknown",
 };
 
-// ─── Steps ──────────────────────────────────────────────────
+// ============================================================
+// STEP TREES
+// ============================================================
+
+// ─── NO COOLING / NOT KEEPING UP ────────────────────────────
+// Real field path:
+//   Customer interview → thermostat → filter → blower check
+//   Blower running → outdoor unit walk-up → contactor/voltage → capacitor → gauges → delta-T
+//   Blower NOT running → LEDs/power → fuse → fault codes
 
 const NO_COOLING_STEPS: PackStep[] = [
+
+  // ── THERMOSTAT ───────────────────────────────────────────
+
   {
-    id: "call_for_cooling",
-    title: "Call for cooling present?",
+    id: "thermostat_set",
+    title: "Set thermostat for diagnosis",
     prompt:
-      "Confirm the thermostat is calling for cooling — set to COOL, fan AUTO, setpoint below room temp.",
+      "Set to COOL, fan AUTO, setpoint below room temp. Listen and wait 30 seconds.",
     capture: {
-      tag: "system.call_for_cooling",
-      type: "YES_NO_UNABLE",
-      required: true,
-      sourceType: "OBSERVED",
-    },
-    requiresTool: false,
-  },
-  {
-    id: "indoor_power",
-    title: "Indoor unit power confirmed?",
-    prompt:
-      "Check the air handler or furnace — verify breaker on, disconnect closed, no blown fuses.",
-    capture: {
-      tag: "indoor.power",
-      type: "YES_NO_UNABLE",
-      required: true,
-      sourceType: "OBSERVED",
-    },
-    requiresTool: false,
-    prereq: (ctx) => ev(ctx, "system.call_for_cooling") === "Yes",
-  },
-  {
-    id: "blower_running",
-    title: "Indoor blower running?",
-    prompt: "Confirm whether the indoor blower motor is running.",
-    capture: {
-      tag: "indoor.blower.running",
-      type: "YES_NO_UNABLE",
-      required: true,
-      sourceType: "OBSERVED",
-    },
-    requiresTool: false,
-    prereq: (ctx) =>
-      ev(ctx, "system.call_for_cooling") === "Yes" &&
-      ev(ctx, "indoor.power") === "Yes",
-  },
-  {
-    id: "airflow_at_supply",
-    title: "Airflow at supply registers?",
-    prompt: "Check nearest supply register — is air moving?",
-    capture: {
-      tag: "airflow.supply_present",
-      type: "YES_NO_UNABLE",
-      required: true,
-      sourceType: "OBSERVED",
-    },
-    requiresTool: false,
-    prereq: (ctx) => ev(ctx, "indoor.blower.running") === "Yes",
-  },
-  {
-    id: "filter_condition",
-    title: "Air filter condition?",
-    prompt: "Inspect the air filter.",
-    capture: {
-      tag: "airflow.filter_condition",
+      tag: "thermostat.response",
       type: "SELECT",
       options: [
-        "Clean",
-        "Moderately dirty",
-        "Severely restricted / collapsed",
+        "Blower starts",
+        "Nothing responds",
+        "Already running",
       ],
       required: true,
       sourceType: "OBSERVED",
     },
     requiresTool: false,
-    prereq: (ctx) => ev(ctx, "indoor.blower.running") === "Yes",
   },
+
   {
-    id: "outdoor_power",
-    title: "Outdoor unit power confirmed?",
-    prompt:
-      "Check outdoor condenser — verify breaker, disconnect, and no blown fuses.",
+    id: "thermostat_display",
+    title: "Any fault codes or warnings?",
+    prompt: "Check display for error codes, low battery, or blank screen.",
     capture: {
-      tag: "outdoor.power",
-      type: "YES_NO_UNABLE",
+      tag: "thermostat.display",
+      type: "SELECT",
+      options: [
+        "Display normal",
+        "Fault code shown",
+        "Blank or unresponsive",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "thermostat.response") !== undefined,
+  },
+
+  // ── INDOOR UNIT — FILTER & BLOWER ───────────────────────
+
+  {
+    id: "airflow_at_filter",
+    title: "Airflow at return grille?",
+    prompt:
+      "Find the main return grille or filter location. Listen and feel for airflow. Hold paper near grille if needed.",
+    capture: {
+      tag: "airflow.at_filter",
+      type: "SELECT",
+      options: [
+        "Strong and steady",
+        "Weak",
+        "No airflow",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "thermostat.response") !== undefined,
+  },
+
+  {
+    id: "filter_condition",
+    title: "Filter condition?",
+    prompt: "Locate and inspect the filter — return grille, air handler, or filter cabinet.",
+    hint: "A collapsed or severely restricted filter can cause low airflow, coil freeze, and compressor issues downstream.",
+    capture: {
+      tag: "airflow.filter_condition",
+      type: "SELECT",
+      options: [
+        "Clean",
+        "Dirty but open",
+        "Severely restricted or missing",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "airflow.at_filter") !== undefined,
+  },
+
+  {
+    id: "condensate_check",
+    title: "Drain pan / condensate switch?",
+    prompt:
+      "Before opening the panel — visually check the primary drain pan and any inline condensate switches.",
+    capture: {
+      tag: "indoor.condensate",
+      type: "SELECT",
+      options: [
+        "Clear — no water",
+        "Water in pan — float tripped",
+        "Condensate switch tripped",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "thermostat.response") === "Nothing responds",
+  },
+
+  // ── BLOWER NOT RUNNING — INDOOR POWER PATH ──────────────
+
+  {
+    id: "low_voltage_present",
+    title: "Low voltage present at board?",
+    prompt:
+      "Check for 24V at the control board. Presence confirms transformer and high voltage are good.",
+    hint: "Set meter to AC volts. Probe the R and C terminals on the control board — R is 24V hot, C is common. A reading of 24–28V confirms the transformer is working and high voltage is present. No reading means no transformer output — check high voltage next.",
+    capture: {
+      tag: "indoor.low_voltage",
+      type: "SELECT",
+      options: [
+        "Yes — 24V present",
+        "No — 0V",
+      ],
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => ev(ctx, "thermostat.response") === "Nothing responds",
+  },
+
+  {
+    id: "high_voltage_present",
+    title: "High voltage entering unit?",
+    prompt:
+      "Check both legs entering the unit at disconnect or service panel. Are both legs present?",
+    hint: "SAFETY: High voltage present. Set meter to AC volts, 300V or higher range. Check both legs at the disconnect or line side of the unit. L1 to ground and L2 to ground should each read 120V. L1 to L2 should read 240V. One leg missing means a utility or breaker issue — do not proceed, call electrician.",
+    capture: {
+      tag: "indoor.high_voltage",
+      type: "SELECT",
+      options: [
+        "Both legs present",
+        "One leg missing",
+        "No voltage either leg",
+      ],
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => ev(ctx, "indoor.low_voltage") === "No — 0V",
+  },
+
+  {
+    id: "electrician_referral",
+    title: "Electrician required",
+    prompt:
+      "One leg missing at the unit — this is a utility or breaker issue outside HVAC scope. Refer to a licensed electrician before any further HVAC diagnosis.",
+    capture: {
+      tag: "indoor.electrician_referral",
+      type: "SELECT",
+      options: [
+        "Noted — electrician called",
+        "Recheck — both legs now present",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.high_voltage") === "One leg missing",
+  },
+
+  {
+    id: "no_power_conclusion",
+    title: "No power to unit",
+    prompt:
+      "No voltage on either leg — check the breaker and disconnect. Reset breaker if tripped, close disconnect if open.",
+    capture: {
+      tag: "indoor.no_power",
+      type: "SELECT",
+      options: [
+        "Breaker tripped — reset",
+        "Disconnect open — closed now",
+        "No obvious cause",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.high_voltage") === "No voltage either leg",
+  },
+
+  {
+    id: "transformer_diagnosis",
+    title: "Transformer status?",
+    prompt:
+      "High voltage present but no low voltage — transformer has failed.",
+    hint: "High voltage is confirmed entering the unit but the transformer is not producing 24V output. The transformer has failed. Primary winding receives 240V, secondary winding should output 24V. No output with good input confirms transformer failure.",
+    capture: {
+      tag: "indoor.transformer",
+      type: "SELECT",
+      options: [
+        "Confirmed — bad transformer",
+        "Recheck — low voltage now present",
+      ],
       required: true,
       sourceType: "OBSERVED",
     },
     requiresTool: false,
     prereq: (ctx) =>
-      ev(ctx, "indoor.blower.running") === "Yes" &&
-      ev(ctx, "airflow.supply_present") === "Yes",
+      ev(ctx, "indoor.high_voltage") === "Both legs present" &&
+      ev(ctx, "indoor.low_voltage") === "No — 0V",
   },
+
+  {
+    id: "transformer_repair_confirmed",
+    title: "Transformer replaced — low voltage restored?",
+    prompt:
+      "Replace transformer. Restore power. Check for 24V at the control board.",
+    capture: {
+      tag: "repair.transformer",
+      type: "SELECT",
+      options: [
+        "Yes — 24V confirmed, system running",
+        "No — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.transformer") === "Confirmed — bad transformer",
+  },
+
+  {
+    id: "indoor_fuse",
+    title: "Control fuse condition?",
+    prompt: "Locate and check the low-voltage control fuse on the board.",
+    hint: "The control fuse is typically a 3A or 5A automotive-style fuse located on the control board. A blown fuse often means a wiring short or failed component caused an overcurrent. Replace the fuse and identify the cause before returning to service — it will blow again if the root cause is not found.",
+    capture: {
+      tag: "indoor.board.fuse",
+      type: "SELECT",
+      options: [
+        "Fuse good",
+        "Fuse blown",
+        "No fuse on board",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.low_voltage") === "Yes — 24V present",
+  },
+
+  {
+    id: "fuse_root_cause_check",
+    title: "Find fuse root cause",
+    prompt:
+      "Do not replace the fuse yet. With power off, disconnect low voltage wiring and check resistance to ground on each wire.",
+    hint: "Set meter to resistance. Check each low voltage wire individually — R, Y, G, C, W. A reading near zero ohms to ground means that wire or the component it connects to is shorted. The contactor coil is a common culprit — disconnect the Y wire at the contactor and recheck.",
+    capture: {
+      tag: "indoor.fuse_root_cause",
+      type: "SELECT",
+      options: [
+        "Shorted wire found",
+        "Contactor coil shorted",
+        "No short found — cause unclear",
+      ],
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => ev(ctx, "indoor.board.fuse") === "Fuse blown",
+  },
+
+  {
+    id: "fuse_repair_ready",
+    title: "Root cause resolved?",
+    prompt: "Root cause identified and repaired. Replace the fuse and restore power.",
+    capture: {
+      tag: "indoor.fuse_repair",
+      type: "SELECT",
+      options: [
+        "Fuse replaced — system restored",
+        "Further diagnosis needed",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "indoor.fuse_root_cause") === "Shorted wire found" ||
+      ev(ctx, "indoor.fuse_root_cause") === "Contactor coil shorted",
+  },
+
+  {
+    id: "thermostat_bypass",
+    title: "Bypass thermostat — does system respond?",
+    prompt: "Jump R to Y and R to G at the board. Does the system start?",
+    hint: "Jump R to Y at the control board to call for cooling. Jump R to G to call for the blower. Use a short piece of thermostat wire or a jumper. This removes the thermostat from the circuit entirely. If the system responds to the jumper but not the thermostat, the thermostat has failed.",
+    capture: {
+      tag: "indoor.thermostat_bypass",
+      type: "SELECT",
+      options: [
+        "Yes — compressor and blower motor start",
+        "Compressor only",
+        "No compressor response",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.board.fuse") === "Fuse good",
+  },
+
+  {
+    id: "blower_relay",
+    title: "Blower relay functional?",
+    prompt:
+      "Compressor cycles but no blower. Check blower relay — is it energizing?",
+    hint: "The blower relay is typically located on the control board. It receives a signal from the board and closes to send power to the blower motor. Listen for a click when the board is energized. No click means the relay is not energizing — this points to a bad control board.",
+    capture: {
+      tag: "indoor.blower_relay",
+      type: "SELECT",
+      options: [
+        "Relay good",
+        "Relay bad — no click or response",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.thermostat_bypass") === "Compressor only",
+  },
+
+  {
+    id: "blower_capacitor",
+    title: "Blower capacitor reading?",
+    prompt: "Measure blower capacitor with meter. Compare to rated value on label.",
+    hint: "The blower capacitor is usually a small oval or round capacitor near the blower motor. Set meter to capacitance mode (µF). Discharge the capacitor first by shorting the terminals with an insulated screwdriver. Compare the reading to the rated value on the label — more than 6% below rated is a failed capacitor.",
+    capture: {
+      tag: "indoor.blower_capacitor",
+      type: "SELECT",
+      options: [
+        "Within spec",
+        "Low or open",
+      ],
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => ev(ctx, "indoor.blower_relay") === "Relay good",
+  },
+
+  {
+    id: "blower_motor_conclusion",
+    title: "Blower motor — confirmed failed?",
+    prompt:
+      "Relay good, capacitor good, blower not running — blower motor has failed.",
+    capture: {
+      tag: "indoor.blower.motor.conclusion",
+      type: "SELECT",
+      options: [
+        "Confirmed bad blower motor",
+        "Blower now running — recheck",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "indoor.blower_relay") === "Relay good" &&
+      ev(ctx, "indoor.blower_capacitor") === "Within spec",
+  },
+
+  {
+    id: "blower_motor_repair_confirmed",
+    title: "Blower motor replaced — airflow restored?",
+    prompt:
+      "Replace blower motor. Restore power. Is blower running and airflow confirmed at return grille?",
+    capture: {
+      tag: "repair.blower_motor",
+      type: "SELECT",
+      options: [
+        "Yes — airflow confirmed",
+        "No — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.blower.motor.conclusion") === "Confirmed bad blower motor",
+  },
+
+  {
+    id: "control_board_conclusion",
+    title: "Control board — confirmed failed?",
+    prompt:
+      "Fuse good, thermostat bypass tested, blower relay not energizing — control board has failed.",
+    capture: {
+      tag: "indoor.control_board.conclusion",
+      type: "SELECT",
+      options: [
+        "Confirmed bad control board",
+        "Recheck — relay now responding",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.blower_relay") === "Relay bad — no click or response",
+  },
+
+  {
+    id: "control_board_repair_confirmed",
+    title: "Control board replaced — system restored?",
+    prompt:
+      "Replace control board. Restore power. Does system respond to thermostat call?",
+    capture: {
+      tag: "repair.control_board",
+      type: "SELECT",
+      options: [
+        "Yes — system restored",
+        "No — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.control_board.conclusion") === "Confirmed bad control board",
+  },
+
+  {
+    id: "bad_thermostat_conclusion",
+    title: "Thermostat — confirmed failed?",
+    prompt:
+      "System started when thermostat was bypassed — thermostat has failed.",
+    capture: {
+      tag: "indoor.thermostat.conclusion",
+      type: "SELECT",
+      options: [
+        "Confirmed bad thermostat",
+        "Recheck — system now responding",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.thermostat_bypass") === "Yes — compressor and blower motor start",
+  },
+
+  {
+    id: "thermostat_repair_confirmed",
+    title: "Thermostat replaced — system restored?",
+    prompt:
+      "Replace thermostat. Set to COOL, fan AUTO, setpoint below room temp. Does system respond normally?",
+    capture: {
+      tag: "repair.thermostat",
+      type: "SELECT",
+      options: [
+        "Yes — cooling confirmed",
+        "No — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.thermostat.conclusion") === "Confirmed bad thermostat",
+  },
+
+  // ── BLOWER RUNNING — OUTDOOR UNIT PATH ──────────────────
+
+  // ── OUTDOOR UNIT WALK-UP ─────────────────────────────────
+
   {
     id: "outdoor_fan_running",
-    title: "Outdoor fan running?",
+    title: "Outdoor condenser fan running?",
     prompt:
-      "Observe the outdoor condenser unit — is the condenser fan spinning?",
+      "Walk up to the outdoor unit. Is the condenser fan spinning?",
     capture: {
       tag: "outdoor.fan.running",
       type: "YES_NO_UNABLE",
@@ -131,51 +525,565 @@ const NO_COOLING_STEPS: PackStep[] = [
       sourceType: "OBSERVED",
     },
     requiresTool: false,
-    prereq: (ctx) => ev(ctx, "outdoor.power") === "Yes",
+    prereq: (ctx) =>
+      (ev(ctx, "thermostat.response") === "Blower starts" ||
+        ev(ctx, "thermostat.response") === "Already running") &&
+      ev(ctx, "airflow.at_filter") !== undefined,
   },
+
   {
-    id: "compressor_running",
-    title: "Compressor running?",
+    id: "compressor_sound",
+    title: "Compressor — audible?",
     prompt:
-      "Listen and feel at the outdoor unit — is the compressor operating?",
-    hint: "A running compressor produces a low hum or vibration. Humming without starting suggests a capacitor issue.",
+      "Listen at the outdoor unit before opening the panel. What do you hear from the compressor?",
+    hint: "A running compressor produces a steady low hum or vibration. Humming without starting = locked rotor or capacitor issue. Silence = no attempt to start.",
     capture: {
-      tag: "outdoor.compressor.running",
+      tag: "outdoor.compressor.sound",
       type: "SELECT",
       options: [
-        "Running normally",
-        "Humming but not starting",
-        "Not running / silent",
-        "Unable to determine",
+        "Running — steady hum / vibration",
+        "Attempting but not starting",
+        "Silent — no attempt",
       ],
       required: true,
       sourceType: "OBSERVED",
     },
     requiresTool: false,
-    prereq: (ctx) => ev(ctx, "outdoor.fan.running") === "Yes",
+    prereq: (ctx) => ev(ctx, "outdoor.fan.running") !== undefined,
   },
+
+  // ── SERVICE PANEL — CONTACTOR ────────────────────────────
+  // Skip contactor visual if compressor is already confirmed running —
+  // a running compressor proves the contactor is pulled and both legs are present.
+
   {
-    id: "supply_temp",
-    title: "Supply air temperature?",
-    prompt: "Measure supply air temperature at the nearest register.",
-    hint: "Needed to validate current condition state.",
+    id: "contactor_visual",
+    title: "Contactor — visually pulled in?",
+    prompt:
+      "Open the service panel. Look at the contactor — is it pulled in (energized)?",
+    hint: "The contactor is a heavy-duty relay that connects high voltage to the compressor and condenser fan motor. When energized it pulls in — the movable contacts close against the fixed contacts. Look at the face of the contactor — if pulled in you will see the plunger pushed down and the contacts touching. If not pulled in the plunger is up and contacts are open.",
     capture: {
-      tag: "airflow.supply_temp_f",
-      type: "NUMBER",
-      unit: "°F",
-      placeholder: "e.g. 58",
+      tag: "outdoor.contactor.pulled",
+      type: "YES_NO_UNABLE",
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => {
+      const sound = ev(ctx, "outdoor.compressor.sound");
+      // Compressor running normally proves contactor is pulled — skip
+      if (sound === "Running — steady hum / vibration") return false;
+      return ev(ctx, "outdoor.compressor.sound") !== undefined;
+    },
+  },
+
+  // 24V check — only needed if contactor is NOT pulled.
+  // Fan running proves signal is present on at least one leg,
+  // so if fan is spinning we skip 24V regardless.
+  {
+    id: "low_voltage_at_contactor",
+    title: "24V at contactor coil terminals?",
+    prompt:
+      "Set meter to AC volts. Measure across the contactor coil terminals (low-voltage side). Is 24V present?",
+    hint: "Set meter to AC volts. Probe the two small terminals on the contactor coil — these are the low voltage terminals, usually labeled A1 and A2. A reading of 24–28V means the thermostat is calling and the signal is reaching the contactor. No voltage means the signal is not getting through — check thermostat, wiring, and control board.",
+    capture: {
+      tag: "outdoor.contactor.low_voltage",
+      type: "SELECT",
+      options: [
+        "24V present",
+        "No voltage",
+      ],
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => {
+      // Only check 24V if contactor is not pulled
+      if (ev(ctx, "outdoor.contactor.pulled") !== "No") return false;
+      // Fan running proves signal present — skip 24V
+      if (ev(ctx, "outdoor.fan.running") === "Yes") return false;
+      return true;
+    },
+  },
+
+  {
+    id: "contactor_conclusion",
+    title: "Contactor diagnosis?",
+    prompt:
+      "24V present at coil but contactor not pulled in — contactor has failed.",
+    capture: {
+      tag: "outdoor.contactor.conclusion",
+      type: "SELECT",
+      options: [
+        "Confirmed bad contactor",
+        "Recheck — contactor now pulled",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.contactor.low_voltage") === "24V present" &&
+      ev(ctx, "outdoor.contactor.pulled") === "No",
+  },
+
+  {
+    id: "contactor_repair_confirmed",
+    title: "Contactor replaced — system restored?",
+    prompt:
+      "Replace contactor. Restore power. Is system responding to thermostat call?",
+    capture: {
+      tag: "repair.contactor",
+      type: "SELECT",
+      options: [
+        "Yes — system restored",
+        "No — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "outdoor.contactor.conclusion") === "Confirmed bad contactor",
+  },
+
+  {
+    id: "controls_conclusion",
+    title: "Controls issue — no 24V signal",
+    prompt:
+      "No 24V at contactor coil — thermostat or control board not sending signal to outdoor unit.",
+    capture: {
+      tag: "outdoor.controls.conclusion",
+      type: "SELECT",
+      options: [
+        "Confirmed — no signal from controls",
+        "Recheck — voltage now present",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.contactor.low_voltage") === "No voltage" &&
+      ev(ctx, "outdoor.contactor.pulled") === "No",
+  },
+
+  {
+    id: "controls_repair_confirmed",
+    title: "Controls repaired — signal restored?",
+    prompt:
+      "Repair or replace thermostat or control board as indicated. Verify 24V signal at contactor coil.",
+    capture: {
+      tag: "repair.controls",
+      type: "SELECT",
+      options: [
+        "Yes — 24V confirmed, system running",
+        "No — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "outdoor.controls.conclusion") === "Confirmed — no signal from controls",
+  },
+
+  // High voltage LINE side — check both legs individually.
+  // Skip entirely if compressor is running (both legs proven present).
+  // If one leg missing → electrician call, flag immediately.
+  {
+    id: "high_voltage_line_in",
+    title: "High voltage — line side of contactor?",
+    prompt:
+      "Measure L1 and L2 on the LINE side (incoming) of the contactor. Record both legs individually.",
+    hint: "SAFETY: Confirm disconnect is closed before measuring. Set meter to AC volts, 300V or higher range. Measure L1 to L2 on the line side of the contactor — should read 208–240V. Then measure each leg to ground — should read 120V each. One leg low or missing means a utility or breaker issue. Stop and call a licensed electrician — do not proceed.",
+    capture: {
+      tag: "outdoor.contactor.hv_line_in",
+      type: "SELECT",
+      options: [
+        "Both legs normal — 208–240V",
+        "One leg missing",
+        "Low or no voltage",
+      ],
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => {
+      const sound = ev(ctx, "outdoor.compressor.sound");
+      // Compressor running proves both legs present — skip
+      if (sound === "Running — steady hum / vibration") return false;
+      // Only check if contactor is pulled or 24V confirmed
+      return (
+        ev(ctx, "outdoor.contactor.pulled") === "Yes" ||
+        ev(ctx, "outdoor.contactor.low_voltage") === "24V present"
+      );
+    },
+  },
+
+  // High voltage LOAD side — skip if compressor running (proven passing through).
+  // Also skip if one leg is missing at line side — that's an electrician issue,
+  // no point checking load side.
+  {
+    id: "high_voltage_load_out",
+    title: "High voltage — load side of contactor?",
+    prompt:
+      "Measure T1 and T2 on the LOAD side (outgoing) of the contactor. Are both legs passing through?",
+    hint: "Measure T1 to T2 on the load side of the contactor — the side feeding the compressor and fan motor. Should match line side voltage. If line side is good but load side is low or missing, the contactor contacts are burned or not making — replace the contactor.",
+    capture: {
+      tag: "outdoor.contactor.hv_load_out",
+      type: "SELECT",
+      options: [
+        "Both legs passing",
+        "One or both legs absent",
+        "Significant voltage drop",
+      ],
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => {
+      const sound = ev(ctx, "outdoor.compressor.sound");
+      // Compressor running proves load side is good — skip
+      if (sound === "Running — steady hum / vibration") return false;
+      const lineIn = ev(ctx, "outdoor.contactor.hv_line_in");
+      // One leg missing at line side = electrician issue — stop here
+      if (lineIn === "One leg missing") return false;
+      if (lineIn === "Low or no voltage") return false;
+      return lineIn !== undefined;
+    },
+  },
+
+  {
+    id: "safety_switches",
+    title: "Safety switches — any tripped?",
+    prompt:
+      "High and low voltage confirmed passing through but compressor not running. Check high pressure switch, low pressure switch, and any other safeties.",
+    capture: {
+      tag: "outdoor.safety_switches",
+      type: "SELECT",
+      options: [
+        "All switches closed — none tripped",
+        "Pressure switch tripped",
+        "Other switch tripped",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.contactor.hv_load_out") === "Both legs passing" &&
+      ev(ctx, "outdoor.compressor.sound") !== "Running — steady hum / vibration",
+  },
+
+  // ── CAPACITOR ────────────────────────────────────────────
+  // Skip both capacitor steps if fan AND compressor are both running normally.
+  // Both motors running proves the capacitor is functional.
+  // If fan running but compressor not starting — keep capacitor (most likely cause).
+
+  {
+    id: "capacitor_visual",
+    title: "Capacitor — visual inspection",
+    prompt:
+      "Inspect the capacitor(s). Look for bulging top, oil leaking from bottom, or burn marks.",
+    hint: "Look at the top of the capacitor — it should be flat. A bulging or domed top means internal pressure has built up from a failed capacitor. Check the base for oil residue which indicates the capacitor has leaked. Look for burn marks or discoloration on the terminals or body. Any of these is a confirmed failure.",
+    capture: {
+      tag: "outdoor.capacitor.visual",
+      type: "SELECT",
+      options: [
+        "Normal — no visible damage",
+        "Obvious failure — bulging or oil",
+        "Burn marks or discoloration",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "outdoor.compressor.sound") !== undefined,
+  },
+
+  {
+    id: "capacitor_reading",
+    title: "Capacitor — measured value?",
+    prompt:
+      "Discharge and measure the capacitor with a meter capable of capacitance (µF). Compare to rated value on label.",
+    hint: "Set meter to capacitance mode (µF). Discharge the capacitor first — shut off power and short the terminals with an insulated screwdriver. Most outdoor units use a dual run capacitor with two values on the label, for example 45/5 µF. Measure each section separately. A reading more than 6% below the rated value is a failed capacitor.",
+    capture: {
+      tag: "outdoor.capacitor.reading",
+      type: "SELECT",
+      options: [
+        "Within spec",
+        "Below spec",
+        "Open — no reading",
+      ],
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => {
+      return ev(ctx, "outdoor.capacitor.visual") !== undefined;
+    },
+  },
+
+  {
+    id: "fan_motor_diagnosis",
+    title: "Condenser fan motor — spins freely?",
+    prompt:
+      "Capacitor good but fan not spinning. Shut down power. Try spinning fan blade by hand.",
+    capture: {
+      tag: "outdoor.fan.motor",
+      type: "SELECT",
+      options: [
+        "Spins freely — bad motor",
+        "Hard to spin — seized motor",
+        "Fan was spinning",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.capacitor.reading") === "Within spec" &&
+      ev(ctx, "outdoor.fan.running") === "No",
+  },
+
+  {
+    id: "fan_motor_conclusion",
+    title: "Fan motor — confirmed failed?",
+    prompt:
+      "Capacitor good, motor not running, spins freely or seized — fan motor has failed.",
+    capture: {
+      tag: "outdoor.fan.motor.conclusion",
+      type: "SELECT",
+      options: [
+        "Confirmed bad fan motor",
+        "Fan now running — recheck",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.fan.motor") === "Spins freely — bad motor" ||
+      ev(ctx, "outdoor.fan.motor") === "Hard to spin — seized motor",
+  },
+
+  {
+    id: "fan_motor_repair_confirmed",
+    title: "Condenser fan motor replaced — fan running?",
+    prompt:
+      "Replace condenser fan motor. Restore power. Is condenser fan spinning normally?",
+    capture: {
+      tag: "repair.fan_motor",
+      type: "SELECT",
+      options: [
+        "Yes — fan running",
+        "No — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "outdoor.fan.motor.conclusion") === "Confirmed bad fan motor",
+  },
+
+  {
+    id: "compressor_diagnostics",
+    title: "Compressor — starts with start assist?",
+    prompt:
+      "Capacitor good, motors good. Try hard start kit or soft start. Does compressor start?",
+    capture: {
+      tag: "outdoor.compressor.start_assist",
+      type: "SELECT",
+      options: [
+        "Starts with assist — recommend hard start",
+        "Still won't start — further diagnosis needed",
+        "Not applicable — compressor running",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.capacitor.reading") === "Within spec" &&
+      ev(ctx, "outdoor.compressor.sound") !== "Running — steady hum / vibration",
+  },
+
+  {
+    id: "compressor_ohms",
+    title: "Compressor windings — resistance check?",
+    prompt:
+      "Measure resistance across compressor terminals C-S, C-R, S-R. Any open or shorted windings?",
+    capture: {
+      tag: "outdoor.compressor.windings",
+      type: "SELECT",
+      options: [
+        "All windings normal",
+        "Open winding",
+        "Shorted or grounded",
+      ],
       required: false,
       sourceType: "TOOL_PROOF",
     },
     requiresTool: true,
     prereq: (ctx) =>
-      ev(ctx, "outdoor.compressor.running") === "Running normally",
+      ev(ctx, "outdoor.compressor.start_assist") === "Still won't start — further diagnosis needed",
   },
+
+  {
+    id: "compressor_failure_confirmed",
+    title: "Compressor — confirmed failed?",
+    prompt:
+      "Open or shorted windings confirm compressor failure. System will not operate until compressor is replaced.",
+    capture: {
+      tag: "outdoor.compressor.failed",
+      type: "SELECT",
+      options: [
+        "Confirmed — bad compressor",
+        "Windings normal — recheck",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.compressor.windings") === "Open winding" ||
+      ev(ctx, "outdoor.compressor.windings") === "Shorted or grounded",
+  },
+
+  {
+    id: "compressor_authorization",
+    title: "Compressor replacement — authorization needed",
+    prompt:
+      "Compressor replacement is a major repair. Quote the job and obtain customer authorization before proceeding.",
+    hint: "Compressor replacement typically includes: new compressor, new run capacitor, new contactor, filter drier, leak check, vacuum, and recharge. Always quote as a complete system restoration not just the compressor alone.",
+    capture: {
+      tag: "repair.compressor.authorization",
+      type: "SELECT",
+      options: [
+        "Authorization obtained — proceeding",
+        "Authorization declined — system down",
+        "Quote pending — follow up needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "outdoor.compressor.failed") === "Confirmed — bad compressor",
+  },
+
+  // ── REFRIGERANT PRESSURES ────────────────────────────────
+
+  {
+    id: "suction_pressure",
+    title: "Suction pressure (low side)?",
+    prompt:
+      "Connect gauges. Record suction pressure after system has run at least 5 minutes.",
+    hint: "Connect gauges to the service valves — low side (suction) is the larger valve, usually blue hose. Let the system run at least 5 minutes before recording. Typical R-410A suction pressure at 75°F ambient is 100–130 PSI. Low suction indicates low charge or restriction. High suction indicates overcharge or compressor issue. Always refer to the manufacturer data plate, charging chart, or service manual for equipment-specific target values.",
+    capture: {
+      tag: "refrigerant.suction_psi",
+      type: "NUMBER",
+      unit: "PSI",
+      placeholder: "e.g. 115",
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => {
+      if (capacitorFailed(ctx)) return false;
+      return ev(ctx, "outdoor.capacitor.visual") !== undefined;
+    },
+  },
+
+  {
+    id: "liquid_pressure",
+    title: "Liquid pressure (high side)?",
+    prompt: "Record high-side (liquid line) pressure.",
+    hint: "The high side (liquid line) service valve is the smaller valve, usually red hose. Record after system has run at least 5 minutes. Typical R-410A high side at 75°F ambient is 250–350 PSI. High head pressure indicates dirty condenser coil, overcharge, or restricted airflow across condenser. Low head pressure with low suction indicates low charge or leak. Always refer to the manufacturer data plate, charging chart, or service manual for equipment-specific target values.",
+    capture: {
+      tag: "refrigerant.liquid_psi",
+      type: "NUMBER",
+      unit: "PSI",
+      placeholder: "e.g. 275",
+      required: true,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => {
+      if (capacitorFailed(ctx)) return false;
+      return ev(ctx, "refrigerant.suction_psi") !== undefined;
+    },
+  },
+
+  {
+    id: "pressure_diagnosis",
+    title: "Pressure reading interpretation?",
+    prompt:
+      "Based on suction and head pressure readings — what does the pattern indicate?",
+    hint: "Compare both readings together — the pattern tells the story. Low suction with normal head means refrigerant is restricted before the compressor — check metering device or look for ice on the suction line. High head with normal suction means heat is not being rejected — check condenser coil cleanliness and airflow. Both readings near zero means the system has lost its charge — search for a leak. Always refer to the manufacturer data plate, charging chart, or service manual for equipment-specific target values.",
+    capture: {
+      tag: "refrigerant.pressure_pattern",
+      type: "SELECT",
+      options: [
+        "Both pressures normal",
+        "Suction low (restriction or leak)",
+        "Head pressure high (overcharge or blockage)",
+      ],
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "refrigerant.liquid_psi") !== undefined,
+  },
+
+  {
+    id: "superheat_or_subcooling",
+    title: "Superheat / subcooling — if conditions allow?",
+    prompt:
+      "If time and conditions allow, calculate superheat (TXV systems: target 10–15°F) or subcooling (fixed orifice: target 10–18°F).",
+    hint: "Superheat is measured at the suction line near the outdoor unit — suction line temperature minus suction saturation temperature. TXV systems target 10–15°F superheat. Fixed orifice systems target 25–35°F. Subcooling is measured at the liquid line — liquid saturation temperature minus liquid line temperature. Target 10–18°F subcooling. These values confirm correct charge level and metering device operation. Always refer to the manufacturer data plate, charging chart, or service manual for equipment-specific target values.",
+    capture: {
+      tag: "refrigerant.superheat_subcooling",
+      type: "SELECT",
+      options: [
+        "Both in range",
+        "One or more readings high",
+        "One or more readings low",
+      ],
+      required: false,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => {
+      if (capacitorFailed(ctx)) return false;
+      return ev(ctx, "refrigerant.liquid_psi") !== undefined;
+    },
+  },
+
+  // ── DELTA-T ──────────────────────────────────────────────
+
+  {
+    id: "supply_temp",
+    title: "Supply air temperature?",
+    prompt: "Measure air temperature at the nearest supply register.",
+    capture: {
+      tag: "airflow.supply_temp_f",
+      type: "NUMBER",
+      unit: "°F",
+      placeholder: "e.g. 57",
+      required: false,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => {
+      if (capacitorFailed(ctx)) return false;
+      return ev(ctx, "outdoor.capacitor.visual") !== undefined;
+    },
+  },
+
   {
     id: "return_temp",
     title: "Return air temperature?",
-    prompt: "Measure return air temperature at the filter grille.",
-    hint: "Delta-T (return minus supply) confirms system performance.",
+    prompt: "Measure air temperature at the return grille or filter slot.",
+    hint: "Delta-T (return minus supply) should be 16–22°F for a properly operating system.",
     capture: {
       tag: "airflow.return_temp_f",
       type: "NUMBER",
@@ -189,12 +1097,14 @@ const NO_COOLING_STEPS: PackStep[] = [
   },
 ];
 
+// ─── WATER LEAK / FLOAT TRIP ─────────────────────────────────
+
 const WATER_FLOAT_STEPS: PackStep[] = [
   {
     id: "float_tripped",
     title: "Float switch tripped?",
     prompt:
-      "Check the secondary drain pan float switch — is it in the tripped position?",
+      "Check the secondary drain pan float switch — is it in the tripped (open) position?",
     capture: {
       tag: "drainage.float_switch.tripped",
       type: "YES_NO_UNABLE",
@@ -206,15 +1116,14 @@ const WATER_FLOAT_STEPS: PackStep[] = [
   {
     id: "pan_water_level",
     title: "Standing water in secondary pan?",
-    prompt: "Inspect secondary drain pan — how much standing water is present?",
+    prompt: "How much water is in the secondary drain pan?",
     capture: {
       tag: "drainage.secondary_pan.water_level",
       type: "SELECT",
       options: [
         "Overflowing",
         "High — near float switch",
-        "Low / trace moisture",
-        "Dry",
+        "Low or dry",
       ],
       required: true,
       sourceType: "OBSERVED",
@@ -225,15 +1134,15 @@ const WATER_FLOAT_STEPS: PackStep[] = [
   {
     id: "primary_drain_flow",
     title: "Primary drain flowing?",
-    prompt: "Pour one cup of water into primary drain pan. Observe drain flow.",
+    prompt:
+      "Pour one cup of water into the primary condensate drain pan. Observe drain flow.",
     capture: {
       tag: "drainage.primary_drain.flow",
       type: "SELECT",
       options: [
         "Flows freely",
-        "Slow drain",
-        "Does not drain / backs up",
-        "Unable to test",
+        "Slow or restricted",
+        "Does not drain",
       ],
       required: true,
       sourceType: "OBSERVED",
@@ -241,7 +1150,24 @@ const WATER_FLOAT_STEPS: PackStep[] = [
     requiresTool: false,
     prereq: (ctx) => ev(ctx, "drainage.float_switch.tripped") === "Yes",
   },
+  {
+    id: "coil_iced",
+    title: "Evaporator coil iced over?",
+    prompt:
+      "Inspect the evaporator coil — is there ice present on the coil or suction line?",
+    hint: "Ice-over is often caused by low airflow (dirty filter) or low refrigerant charge. The system must be defrosted before accurate refrigerant readings can be taken.",
+    capture: {
+      tag: "indoor.coil.iced",
+      type: "YES_NO_UNABLE",
+      required: true,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "drainage.primary_drain.flow") !== undefined,
+  },
 ];
+
+// ─── BREAKER TRIPPING ────────────────────────────────────────
 
 const BREAKER_TRIPS_STEPS: PackStep[] = [
   {
@@ -252,10 +1178,9 @@ const BREAKER_TRIPS_STEPS: PackStep[] = [
       tag: "electrical.breaker.location",
       type: "SELECT",
       options: [
-        "Outdoor condenser circuit",
-        "Indoor air handler / furnace circuit",
-        "Both circuits",
-        "Unknown / not determined",
+        "Outdoor unit circuit",
+        "Indoor unit circuit",
+        "Both or unknown",
       ],
       required: true,
       sourceType: "REPORTED",
@@ -271,16 +1196,56 @@ const BREAKER_TRIPS_STEPS: PackStep[] = [
       type: "SELECT",
       options: [
         "Immediately at startup",
-        "After running a few minutes",
-        "After running 15+ minutes",
-        "Intermittently / no clear pattern",
+        "After a few to 15+ minutes",
+        "Intermittently",
       ],
       required: true,
       sourceType: "REPORTED",
     },
     requiresTool: false,
   },
+  {
+    id: "breaker_amp_rating",
+    title: "Breaker amperage vs. equipment nameplate?",
+    prompt:
+      "Check the breaker amperage. Check the equipment nameplate for MCA and MOCP. Does the breaker match?",
+    hint: "An undersized or oversized breaker can cause nuisance trips. MCA = Minimum Circuit Ampacity. MOCP = Maximum Overcurrent Protection.",
+    capture: {
+      tag: "electrical.breaker.sizing",
+      type: "SELECT",
+      options: [
+        "Matches nameplate MOCP",
+        "Undersized vs. nameplate",
+        "Oversized or unverifiable",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "electrical.breaker.location") !== undefined,
+  },
+  {
+    id: "compressor_amps",
+    title: "Compressor running amps?",
+    prompt:
+      "If unit will run, clamp meter on compressor leg. What are the running amps vs. RLA on nameplate?",
+    capture: {
+      tag: "electrical.compressor.amps",
+      type: "SELECT",
+      options: [
+        "Within RLA — normal",
+        "Above RLA — elevated",
+        "At/above LRA",
+      ],
+      required: false,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => ev(ctx, "electrical.breaker.trip_timing") !== undefined,
+  },
 ];
+
+// ─── SHORT CYCLING ───────────────────────────────────────────
 
 const SHORT_CYCLING_STEPS: PackStep[] = [
   {
@@ -292,9 +1257,8 @@ const SHORT_CYCLING_STEPS: PackStep[] = [
       type: "SELECT",
       options: [
         "Less than 2 minutes",
-        "2–5 minutes",
-        "5–10 minutes",
-        "Over 10 minutes (normal range)",
+        "2–10 minutes",
+        "Over 10 minutes",
       ],
       required: true,
       sourceType: "REPORTED",
@@ -302,80 +1266,269 @@ const SHORT_CYCLING_STEPS: PackStep[] = [
     requiresTool: false,
   },
   {
-    id: "fault_code",
-    title: "Any fault codes displayed?",
-    prompt: "Check the thermostat or control board for fault codes.",
+    id: "fault_code_short",
+    title: "Fault code on control board?",
+    prompt:
+      "Check the thermostat or indoor control board for fault codes. What is displayed?",
     capture: {
       tag: "control.fault_code",
       type: "SELECT",
       options: [
-        "High-pressure fault",
-        "Low-pressure fault",
-        "Other fault code",
-        "No fault code shown",
-        "No display available",
+        "Pressure fault (high or low)",
+        "Limit or other fault",
+        "No fault / no display",
       ],
       required: true,
       sourceType: "OBSERVED",
     },
     requiresTool: false,
   },
+  {
+    id: "short_cycle_suction",
+    title: "Suction pressure at shutdown?",
+    prompt:
+      "Connect gauges if not already on. Note suction pressure at the moment of shutdown.",
+    hint: "Low-pressure cutout typically trips below 50–70 PSI on R-410A. High-pressure cutout trips above 600 PSI.",
+    capture: {
+      tag: "refrigerant.suction_at_shutdown",
+      type: "SELECT",
+      options: [
+        "Below 70 PSI",
+        "70–130 PSI — normal range",
+        "Above 400 PSI",
+      ],
+      required: false,
+      sourceType: "TOOL_PROOF",
+    },
+    requiresTool: true,
+    prereq: (ctx) => ev(ctx, "operation.cycle_duration") !== undefined,
+  },
 ];
 
-// ─── Condition Mapping ───────────────────────────────────────
+// ============================================================
+// CONDITION MAPPING
+// ============================================================
 
 const conditionMapFns: ConditionMapFn[] = [
+
+  // Primary observation-based mapping
   (tag, value) => {
-    if (tag === "system.call_for_cooling" && value === "No")
-      return { condition: C.CONTROLS, weight: 4 };
-    if (tag === "indoor.power" && value === "No")
-      return { condition: C.ELECTRICAL, weight: 5 };
-    if (tag === "indoor.blower.running" && value === "No")
-      return { condition: C.ELECTRICAL, weight: 4 };
-    if (tag === "outdoor.power" && value === "No")
-      return { condition: C.ELECTRICAL, weight: 5 };
-    if (tag === "outdoor.fan.running" && value === "No")
-      return { condition: C.ELECTRICAL, weight: 3 };
-    if (
-      tag === "outdoor.compressor.running" &&
-      value === "Humming but not starting"
-    )
-      return { condition: C.ELECTRICAL, weight: 4 };
-    if (
-      tag === "outdoor.compressor.running" &&
-      value === "Not running / silent"
-    )
-      return { condition: C.ELECTRICAL, weight: 3 };
+    // Controls / thermostat
+    if (tag === "thermostat.response" && value === "Nothing responds")
+      return { condition: C.CONTROLS, weight: 5 };
+    if (tag === "thermostat.display") {
+      if (value === "Fault code shown")
+        return { condition: C.CONTROLS, weight: 3 };
+      if (value === "Blank or unresponsive")
+        return { condition: C.CONTROLS, weight: 3 };
+    }
+
+    // Airflow
+    if (tag === "airflow.at_filter") {
+      if (value === "Weak")
+        return { condition: C.AIRFLOW, weight: 3 };
+      if (value === "No airflow")
+        return { condition: C.AIRFLOW, weight: 4 };
+    }
     if (tag === "airflow.filter_condition") {
-      if (value === "Severely restricted / collapsed")
+      if (value === "Severely restricted or missing")
         return { condition: C.AIRFLOW, weight: 5 };
-      if (value === "Moderately dirty")
+      if (value === "Dirty but open")
         return { condition: C.AIRFLOW, weight: 2 };
     }
+
+    // Condensate / drainage — indoor
+    if (tag === "indoor.condensate") {
+      if (value === "Water in pan — float tripped")
+        return { condition: C.DRAINAGE, weight: 4 };
+      if (value === "Condensate switch tripped")
+        return { condition: C.DRAINAGE, weight: 4 };
+    }
+
+    // Indoor electrical — blower not running
+    if (tag === "indoor.high_voltage") {
+      if (value === "One leg missing")
+        return { condition: C.ELECTRICAL, weight: 5 };
+      if (value === "No voltage either leg")
+        return { condition: C.ELECTRICAL, weight: 5 };
+    }
+    if (tag === "indoor.electrician_referral" && value === "Noted — electrician called")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "indoor.no_power" && value === "Breaker tripped — reset")
+      return { condition: C.ELECTRICAL, weight: 4 };
+    if (tag === "indoor.no_power" && value === "Disconnect open — closed now")
+      return { condition: C.ELECTRICAL, weight: 4 };
+    if (tag === "indoor.transformer" && value === "Confirmed — bad transformer")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "indoor.fuse_root_cause" && value === "Shorted wire found")
+      return { condition: C.ELECTRICAL, weight: 4 };
+    if (tag === "indoor.fuse_root_cause" && value === "Contactor coil shorted")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "indoor.board.fuse" && value === "Fuse blown")
+      return { condition: C.ELECTRICAL, weight: 4 };
+    if (tag === "indoor.thermostat_bypass" && value === "Yes — compressor and blower motor start")
+      return { condition: C.CONTROLS, weight: 4 };
+    if (tag === "indoor.blower_relay" && value === "Relay bad — no click or response")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "indoor.blower_capacitor" && value === "Low or open")
+      return { condition: C.ELECTRICAL, weight: 4 };
+    if (tag === "indoor.blower.motor.conclusion" && value === "Confirmed bad blower motor")
+      return { condition: C.MECHANICAL, weight: 5 };
+    if (tag === "indoor.control_board.conclusion" && value === "Confirmed bad control board")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "indoor.thermostat.conclusion" && value === "Confirmed bad thermostat")
+      return { condition: C.CONTROLS, weight: 5 };
+
+    // Outdoor — contactor and voltage
+    if (tag === "outdoor.contactor.pulled" && value === "No")
+      return { condition: C.ELECTRICAL, weight: 3 };
+    if (tag === "outdoor.contactor.conclusion" && value === "Confirmed bad contactor")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "outdoor.controls.conclusion" && value === "Confirmed — no signal from controls")
+      return { condition: C.CONTROLS, weight: 5 };
+    if (tag === "outdoor.contactor.hv_line_in") {
+      if (value === "One leg missing")
+        return { condition: C.ELECTRICAL, weight: 5 };
+      if (value === "Low or no voltage")
+        return { condition: C.ELECTRICAL, weight: 5 };
+    }
+    if (tag === "outdoor.contactor.hv_load_out") {
+      if (value === "One or both legs absent")
+        return { condition: C.ELECTRICAL, weight: 5 };
+      if (value === "Significant voltage drop")
+        return { condition: C.ELECTRICAL, weight: 4 };
+    }
+
+    // Safety switches
+    if (tag === "outdoor.safety_switches") {
+      if (value === "Pressure switch tripped")
+        return { condition: C.REFRIGERANT, weight: 4 };
+      if (value === "Other switch tripped")
+        return { condition: C.ELECTRICAL, weight: 3 };
+    }
+
+    // Capacitor
+    if (tag === "outdoor.capacitor.visual") {
+      if (value === "Obvious failure — bulging or oil")
+        return { condition: C.ELECTRICAL, weight: 5 };
+      if (value === "Burn marks or discoloration")
+        return { condition: C.ELECTRICAL, weight: 4 };
+    }
+    if (tag === "outdoor.capacitor.reading") {
+      if (value === "Below spec")
+        return { condition: C.ELECTRICAL, weight: 4 };
+      if (value === "Open — no reading")
+        return { condition: C.ELECTRICAL, weight: 5 };
+    }
+
+    // Fan motor diagnostics
+    if (tag === "outdoor.fan.motor") {
+      if (value === "Spins freely — bad motor")
+        return { condition: C.MECHANICAL, weight: 4 };
+      if (value === "Hard to spin — seized motor")
+        return { condition: C.MECHANICAL, weight: 5 };
+    }
+    if (tag === "outdoor.fan.motor.conclusion" && value === "Confirmed bad fan motor")
+      return { condition: C.MECHANICAL, weight: 5 };
+
+    // Compressor diagnostics
+    if (tag === "outdoor.compressor.start_assist" && value === "Still won't start — further diagnosis needed")
+      return { condition: C.MECHANICAL, weight: 4 };
+    if (tag === "outdoor.compressor.windings") {
+      if (value === "Open winding")
+        return { condition: C.MECHANICAL, weight: 5 };
+      if (value === "Shorted or grounded")
+        return { condition: C.MECHANICAL, weight: 5 };
+    }
+    if (tag === "outdoor.compressor.failed" && value === "Confirmed — bad compressor")
+      return { condition: C.MECHANICAL, weight: 5 };
+    if (tag === "repair.compressor.authorization" && value === "Authorization declined — system down")
+      return { condition: C.UNKNOWN, weight: 1 };
+
+    // Compressor sound
+    if (tag === "outdoor.compressor.sound") {
+      if (value === "Attempting but not starting")
+        return { condition: C.ELECTRICAL, weight: 4 }; // likely capacitor or locked rotor
+      if (value === "Silent — no attempt")
+        return { condition: C.ELECTRICAL, weight: 3 };
+    }
+
+    // Refrigerant pressures
+    if (tag === "refrigerant.pressure_pattern") {
+      if (value === "Suction low (restriction or leak)")
+        return { condition: C.REFRIGERANT, weight: 5 };
+      if (value === "Head pressure high (overcharge or blockage)")
+        return { condition: C.REFRIGERANT, weight: 4 };
+    }
+    if (tag === "refrigerant.superheat_subcooling") {
+      if (value === "One or more readings high")
+        return { condition: C.REFRIGERANT, weight: 4 };
+      if (value === "One or more readings low")
+        return { condition: C.REFRIGERANT, weight: 4 };
+    }
+
+    // Drainage
     if (tag === "drainage.float_switch.tripped" && value === "Yes")
       return { condition: C.DRAINAGE, weight: 4 };
     if (tag === "drainage.secondary_pan.water_level") {
-      if (value === "Overflowing") return { condition: C.DRAINAGE, weight: 5 };
+      if (value === "Overflowing")
+        return { condition: C.DRAINAGE, weight: 5 };
       if (value === "High — near float switch")
         return { condition: C.DRAINAGE, weight: 4 };
     }
     if (tag === "drainage.primary_drain.flow") {
-      if (value === "Does not drain / backs up")
+      if (value === "Does not drain")
         return { condition: C.DRAINAGE, weight: 5 };
-      if (value === "Slow drain") return { condition: C.DRAINAGE, weight: 3 };
+      if (value === "Slow or restricted")
+        return { condition: C.DRAINAGE, weight: 3 };
     }
-    if (tag === "electrical.breaker.location") {
-      if (value !== "Unknown / not determined")
+    if (tag === "indoor.coil.iced" && value === "Yes")
+      return { condition: C.REFRIGERANT, weight: 3 };
+
+    // Breaker
+    if (tag === "electrical.breaker.sizing") {
+      if (value === "Undersized vs. nameplate")
+        return { condition: C.ELECTRICAL, weight: 3 };
+    }
+    if (tag === "electrical.compressor.amps") {
+      if (value === "Above RLA — elevated")
         return { condition: C.ELECTRICAL, weight: 4 };
+      if (value === "At/above LRA")
+        return { condition: C.MECHANICAL, weight: 5 };
     }
+
+    // Short cycling
     if (tag === "control.fault_code") {
-      if (value === "High-pressure fault")
-        return { condition: C.REFRIGERANT, weight: 3 };
-      if (value === "Low-pressure fault")
+      if (value === "Pressure fault (high or low)")
         return { condition: C.REFRIGERANT, weight: 3 };
     }
+    if (tag === "refrigerant.suction_at_shutdown") {
+      if (value === "Below 70 PSI")
+        return { condition: C.REFRIGERANT, weight: 4 };
+      if (value === "Above 400 PSI")
+        return { condition: C.REFRIGERANT, weight: 4 };
+    }
+
+    // Repair confirmation steps
+    if (tag === "repair.thermostat" && value === "No — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 2 };
+    if (tag === "repair.blower_motor" && value === "No — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 2 };
+    if (tag === "repair.control_board" && value === "No — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 2 };
+    if (tag === "repair.fan_motor" && value === "No — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 2 };
+    if (tag === "repair.contactor" && value === "No — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 2 };
+    if (tag === "repair.controls" && value === "No — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 2 };
+    if (tag === "repair.transformer" && value === "No — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 2 };
+
     return null;
   },
+
+  // Delta-T mapping (computed from two evidence values)
   (tag, value, ctx) => {
     if (tag !== "airflow.return_temp_f") return null;
     const supplyStr = ctx.evidence["airflow.supply_temp_f"];
@@ -385,54 +1538,108 @@ const conditionMapFns: ConditionMapFn[] = [
     if (isNaN(supply) || isNaN(ret)) return null;
     const deltaT = ret - supply;
     if (deltaT < 10) return { condition: C.REFRIGERANT, weight: 4 };
-    if (deltaT > 22) return { condition: C.AIRFLOW, weight: 4 };
+    if (deltaT > 22) return { condition: C.AIRFLOW, weight: 3 };
+    return null;
+  },
+
+  // Refrigerant pressure mapping (computed from suction PSI)
+  (tag, value, ctx) => {
+    if (tag !== "refrigerant.liquid_psi") return null;
+    const suctionStr = ctx.evidence["refrigerant.suction_psi"];
+    if (!suctionStr) return null;
+    const suction = parseFloat(suctionStr);
+    if (isNaN(suction)) return null;
+    if (suction < 80) return { condition: C.REFRIGERANT, weight: 4 };
+    if (suction > 160) return { condition: C.REFRIGERANT, weight: 3 };
     return null;
   },
 ];
 
-// ─── Pack Definition ────────────────────────────────────────
+// ============================================================
+// PACK DEFINITION
+// ============================================================
 
 export const HVAC_COOLING_PACK: PackDefinition = {
-  id: "hvac.cooling.v1",
+  id: "hvac.cooling.v2",
   name: "HVAC Cooling Pack",
-  version: "1.0.0",
+  version: "2.0.0",
+
   complaintCategories: [
-    { id: "no_cooling_at_all", label: "No cooling at all", description: "System runs but produces no cold air" },
-    { id: "runs_not_cold", label: "Runs but not cold enough", description: "System operates but doesn't reach setpoint" },
-    { id: "no_airflow", label: "No airflow / weak airflow", description: "Little or no air movement from registers" },
-    { id: "system_dead", label: "System dead — won't turn on", description: "No response at all when cooling is called" },
-    { id: "water_float", label: "Water leak / float trip", description: "Water pooling or float switch has shut system down" },
-    { id: "breaker_trips", label: "Breaker tripping", description: "Circuit breaker trips when system runs" },
-    { id: "short_cycling", label: "Short cycling / rapid on-off", description: "System starts and stops frequently" },
-    { id: "other", label: "Other / unclear", description: "Problem doesn't fit the categories above" },
+    {
+      id: "not_cooling",
+      label: "Not cooling",
+      description: "System running but no cold air",
+    },
+    {
+      id: "not_keeping_up",
+      label: "Not keeping up",
+      description: "Cannot reach setpoint",
+    },
+    {
+      id: "not_turning_on",
+      label: "Not turning on",
+      description: "No response at all",
+    },
+    {
+      id: "water_leak",
+      label: "Water leak",
+      description: "Dripping or pooling water",
+    },
+    {
+      id: "tripping_breaker",
+      label: "Tripping breaker",
+      description: "Circuit keeps tripping",
+    },
+    {
+      id: "other",
+      label: "Other",
+      description: "Describe during diagnosis",
+    },
   ],
+
   steps: {
-    no_cooling_at_all: NO_COOLING_STEPS,
-    runs_not_cold: NO_COOLING_STEPS,
-    no_airflow: NO_COOLING_STEPS,
-    system_dead: NO_COOLING_STEPS,
-    water_float: WATER_FLOAT_STEPS,
-    breaker_trips: BREAKER_TRIPS_STEPS,
-    short_cycling: SHORT_CYCLING_STEPS,
+    not_cooling: NO_COOLING_STEPS,
+    not_keeping_up: NO_COOLING_STEPS,
+    not_turning_on: NO_COOLING_STEPS,
+    water_leak: WATER_FLOAT_STEPS,
+    tripping_breaker: BREAKER_TRIPS_STEPS,
     other: [],
   },
+
   conditionTaxonomy: Object.values(C),
+
   conditionMapFns,
+
   promotionThresholds: {
     plausible: 2,
     evidenceSupported: 5,
     confirmed: 8,
   },
+
   minimumEvidencePaths: {
-    no_cooling_at_all: ["system.call_for_cooling", "indoor.blower.running"],
-    runs_not_cold: ["system.call_for_cooling", "indoor.blower.running"],
-    no_airflow: ["indoor.blower.running"],
-    system_dead: ["indoor.power"],
-    water_float: ["drainage.float_switch.tripped", "drainage.primary_drain.flow"],
-    breaker_trips: ["electrical.breaker.location", "electrical.breaker.trip_timing"],
-    short_cycling: ["operation.cycle_duration", "control.fault_code"],
+    not_cooling: [
+      "thermostat.response",
+      "airflow.filter_condition",
+    ],
+    not_keeping_up: [
+      "thermostat.response",
+      "airflow.filter_condition",
+    ],
+    not_turning_on: [
+      "thermostat.response",
+      "indoor.low_voltage",
+    ],
+    water_leak: [
+      "drainage.float_switch.tripped",
+      "drainage.primary_drain.flow",
+    ],
+    tripping_breaker: [
+      "electrical.breaker.location",
+      "electrical.breaker.trip_timing",
+    ],
     other: [],
   },
+
   tieBreakPriority: [
     "Unknown",
     "Mechanical",
@@ -441,16 +1648,18 @@ export const HVAC_COOLING_PACK: PackDefinition = {
     "Drainage",
     "Electrical",
     "Refrigerant System",
-],
+  ],
+
   downstreamEffects: {
-    "Refrigerant System": ["no_cooling_at_all", "runs_not_cold", "short_cycling"],
-    "Electrical": ["system_dead", "no_cooling_at_all", "breaker_trips"],
-    "Airflow": ["no_airflow", "runs_not_cold", "short_cycling"],
-    "Drainage": ["water_float"],
-    "Control System": ["no_cooling_at_all", "system_dead"],
-    "Mechanical": ["no_cooling_at_all", "no_airflow"],
+    "Refrigerant System": ["not_cooling", "not_keeping_up"],
+    "Electrical": ["not_turning_on", "not_cooling", "tripping_breaker"],
+    "Airflow": ["not_keeping_up"],
+    "Drainage": ["water_leak"],
+    "Control System": ["not_cooling", "not_turning_on"],
+    "Mechanical": ["not_cooling"],
     "Unknown": [],
   },
+
   reportTemplates: {
     technicalTitle: "HVAC Cooling System — Field Diagnostic Report",
     userTitle: "Cooling System Evaluation Summary",
@@ -464,36 +1673,22 @@ export const HVAC_COOLING_PACK: PackDefinition = {
       Unknown: "Undetermined",
     },
     nextStepsByCondition: {
-      Electrical:
-        "Have a licensed HVAC technician inspect electrical components — capacitors, contactors, wiring, and breaker sizing.",
-      "Refrigerant System":
-        "A certified HVAC technician must inspect refrigerant charge and coil integrity. EPA 608 certification required.",
-      Mechanical:
-        "A technician should inspect motors, blower wheels, bearings, and condenser coil for wear or damage.",
-      Airflow:
-        "Replace the air filter immediately. Inspect ductwork for obstructions or disconnections.",
-      Drainage:
-        "Clear the condensate drain line with a wet/dry vac at the drain outlet. Check float switch operation.",
-      "Control System":
-        "Verify thermostat wiring, settings, and battery condition. Check Y-terminal voltage at the control board.",
-      Unknown:
-        "Insufficient evidence to identify a specific condition. A licensed HVAC technician should perform a full inspection.",
+      Electrical: "Inspect and replace failed electrical component — capacitor, contactor, transformer, or motor as indicated.",
+      "Refrigerant System": "Perform leak search, repair leak, and recharge system to manufacturer specifications.",
+      Mechanical: "Inspect and replace failed mechanical component — compressor, fan motor, or blower motor as indicated.",
+      Airflow: "Replace air filter and inspect ductwork for blockages.",
+      Drainage: "Clear condensate drain line and verify float switch operation.",
+      "Control System": "Inspect and replace failed control component — thermostat, control board, or relay as indicated.",
+      Unknown: "Perform full system inspection — diagnosis inconclusive.",
     },
     maintenanceTipsByCondition: {
-      Electrical:
-        "Annual preventive maintenance should include capacitor testing and contactor inspection.",
-      "Refrigerant System":
-        "Annual coil cleaning and leak detection extend system life significantly.",
-      Mechanical:
-        "Lubricate condenser fan motors annually. Replace belts showing cracking or glazing.",
-      Airflow:
-        "Replace filters every 1–3 months depending on occupancy and filter type.",
-      Drainage:
-        "Flush the condensate drain line monthly during cooling season. Use condensate treatment tablets.",
-      "Control System":
-        "Replace thermostat batteries annually. Consider upgrading to a programmable thermostat.",
-      Unknown:
-        "Annual professional maintenance reduces the risk of undiagnosed failure.",
+      Electrical: "Test capacitor µF and inspect contactor for pitting annually.",
+      "Refrigerant System": "Clean coils and verify charge annually with an electronic leak check.",
+      Mechanical: "Lubricate motors and check compressor amp draw at each annual service.",
+      Airflow: "Replace filter every 1–3 months and inspect ducts annually.",
+      Drainage: "Flush condensate drain monthly during cooling season.",
+      "Control System": "Replace thermostat batteries annually and inspect low-voltage wiring.",
+      Unknown: "Schedule full professional maintenance to identify root cause.",
     },
   },
 };

@@ -133,6 +133,23 @@ export interface PackReportTemplates {
   maintenanceTipsByCondition: Record<string, string>;
 }
 
+export type GateStatus = "PASSED" | "FAILED" | "SKIPPED" | "UNKNOWN";
+
+export interface DiagnosticGates {
+  G1_power: GateStatus;
+  G2_controls: GateStatus;
+  G3_mechanical: GateStatus;
+  G4_thermal: GateStatus;
+  G5_verify: GateStatus;
+}
+
+export interface CitedProof {
+  finding: string;
+  condition: string;
+  sourceType: string;
+  weight: number;
+}
+
 export interface TechnicalReport {
   title: string;
   runId: string;
@@ -146,9 +163,34 @@ export interface TechnicalReport {
   secondaryCondition: string | null;
   conditionScores: Record<string, number>;
   evidenceLog: Evidence[];
+  gates: DiagnosticGates;
+  citedProof: CitedProof[];
   determinationSummary: string;
   disclaimer: string;
   generatedAt: string;
+}
+
+export interface SPICEDReport {
+  situation: string;
+  parameters: string;
+  indications: string;
+  condition: string;
+  secondary: string | null;
+  evaluation: string;
+  observation: string;
+  proof: string;
+  nextStep: string;
+  maintenanceTip: string;
+  evidenceStrength: EvidenceState;
+  disclaimer: string;
+}
+
+export interface ServiceSummary {
+  dispatchRequired: boolean;
+  problem: string;
+  evidence: string;
+  resolution: string;
+  prevention: string;
 }
 
 export interface UserFacingReport {
@@ -165,7 +207,12 @@ export interface UserFacingReport {
 
 export interface RunReports {
   technical: TechnicalReport;
+  spiced: SPICEDReport;
+  serviceSummary: ServiceSummary;
   userFacing: UserFacingReport;
+  customerStory: string;
+  techStory: string;
+  auditRecord: string;
 }
 
 export interface SafetyCheckResult {
