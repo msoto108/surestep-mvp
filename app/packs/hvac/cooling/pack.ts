@@ -150,6 +150,27 @@ const NO_COOLING_STEPS: PackStep[] = [
     prereq: (ctx) => ev(ctx, "thermostat.response") === "Nothing responds",
   },
 
+  {
+    id: "condensate_clear",
+    title: "Clear condensate — system restored?",
+    prompt:
+      "Clear the drain line or reset the float switch. Restore power. Does system respond?",
+    capture: {
+      tag: "repair.condensate",
+      type: "SELECT",
+      options: [
+        "Yes — system restored",
+        "No — drain still blocked",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "indoor.condensate") === "Water in pan — float tripped" ||
+      ev(ctx, "indoor.condensate") === "Condensate switch tripped",
+  },
+
   // ── BLOWER NOT RUNNING — INDOOR POWER PATH ──────────────
 
   {
@@ -209,7 +230,10 @@ const NO_COOLING_STEPS: PackStep[] = [
       sourceType: "OBSERVED",
     },
     requiresTool: false,
-    prereq: (ctx) => ev(ctx, "indoor.high_voltage") === "One leg missing",
+    prereq: (ctx) =>
+      ev(ctx, "indoor.high_voltage") === "One leg missing" ||
+      ev(ctx, "indoor.no_power") === "No obvious cause" ||
+      ev(ctx, "indoor.no_power_recheck") === "No — still no power",
   },
 
   {
@@ -230,6 +254,27 @@ const NO_COOLING_STEPS: PackStep[] = [
     },
     requiresTool: false,
     prereq: (ctx) => ev(ctx, "indoor.high_voltage") === "No voltage either leg",
+  },
+
+  {
+    id: "no_power_recheck",
+    title: "Power restored — system responding?",
+    prompt:
+      "Reset breaker or close disconnect. Wait 30 seconds. Does system respond to thermostat call?",
+    capture: {
+      tag: "indoor.no_power_recheck",
+      type: "SELECT",
+      options: [
+        "Yes — system restored",
+        "No — still no power",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "indoor.no_power") === "Breaker tripped — reset" ||
+      ev(ctx, "indoor.no_power") === "Disconnect open — closed now",
   },
 
   {
@@ -290,7 +335,10 @@ const NO_COOLING_STEPS: PackStep[] = [
       sourceType: "OBSERVED",
     },
     requiresTool: false,
-    prereq: (ctx) => ev(ctx, "indoor.low_voltage") === "Yes — 24V present",
+    prereq: (ctx) =>
+      ev(ctx, "indoor.low_voltage") === "Yes — 24V present" ||
+      ev(ctx, "indoor.transformer") === "Recheck — low voltage now present" ||
+      ev(ctx, "indoor.electrician_referral") === "Recheck — both legs now present",
   },
 
   {
@@ -315,6 +363,44 @@ const NO_COOLING_STEPS: PackStep[] = [
   },
 
   {
+    id: "fuse_no_cause_found",
+    title: "Fuse cause unclear — further diagnosis",
+    prompt:
+      "No obvious short found. Check transformer secondary output, inspect control board for burn marks, consider intermittent short under load.",
+    capture: {
+      tag: "indoor.fuse_no_cause",
+      type: "SELECT",
+      options: [
+        "Cause found on further inspection",
+        "Unable to determine — recommend control board replacement",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.fuse_root_cause") === "No short found — cause unclear",
+  },
+
+  {
+    id: "fuse_unknown_conclusion",
+    title: "Fuse cause unknown — recommend board replacement",
+    prompt:
+      "Unable to identify short. Replace control board and recheck.",
+    capture: {
+      tag: "repair.fuse_unknown",
+      type: "SELECT",
+      options: [
+        "Board replaced — system restored",
+        "Issue persists",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.fuse_no_cause") === "Unable to determine — recommend control board replacement",
+  },
+
+  {
     id: "fuse_repair_ready",
     title: "Root cause resolved?",
     prompt: "Root cause identified and repaired. Replace the fuse and restore power.",
@@ -331,7 +417,8 @@ const NO_COOLING_STEPS: PackStep[] = [
     requiresTool: false,
     prereq: (ctx) =>
       ev(ctx, "indoor.fuse_root_cause") === "Shorted wire found" ||
-      ev(ctx, "indoor.fuse_root_cause") === "Contactor coil shorted",
+      ev(ctx, "indoor.fuse_root_cause") === "Contactor coil shorted" ||
+      ev(ctx, "indoor.fuse_no_cause") === "Cause found on further inspection",
   },
 
   {
@@ -351,7 +438,9 @@ const NO_COOLING_STEPS: PackStep[] = [
       sourceType: "OBSERVED",
     },
     requiresTool: false,
-    prereq: (ctx) => ev(ctx, "indoor.board.fuse") === "Fuse good",
+    prereq: (ctx) =>
+      ev(ctx, "indoor.board.fuse") === "Fuse good" ||
+      ev(ctx, "indoor.board.fuse") === "No fuse on board",
   },
 
   {
@@ -391,6 +480,24 @@ const NO_COOLING_STEPS: PackStep[] = [
     },
     requiresTool: true,
     prereq: (ctx) => ev(ctx, "indoor.blower_relay") === "Relay good",
+  },
+
+  {
+    id: "blower_capacitor_repair",
+    title: "Blower capacitor replaced — blower running?",
+    prompt: "Replace blower capacitor. Restore power. Is blower motor running?",
+    capture: {
+      tag: "repair.blower_capacitor",
+      type: "SELECT",
+      options: [
+        "Yes — blower running",
+        "No — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "indoor.blower_capacitor") === "Low or open",
   },
 
   {
@@ -527,7 +634,8 @@ const NO_COOLING_STEPS: PackStep[] = [
     requiresTool: false,
     prereq: (ctx) =>
       (ev(ctx, "thermostat.response") === "Blower starts" ||
-        ev(ctx, "thermostat.response") === "Already running") &&
+        ev(ctx, "thermostat.response") === "Already running" ||
+        ev(ctx, "indoor.thermostat_bypass") === "No compressor response") &&
       ev(ctx, "airflow.at_filter") !== undefined,
   },
 
@@ -714,9 +822,31 @@ const NO_COOLING_STEPS: PackStep[] = [
       // Only check if contactor is pulled or 24V confirmed
       return (
         ev(ctx, "outdoor.contactor.pulled") === "Yes" ||
+        ev(ctx, "outdoor.contactor.pulled") === "Unable to determine" ||
         ev(ctx, "outdoor.contactor.low_voltage") === "24V present"
       );
     },
+  },
+
+  {
+    id: "outdoor_electrician_referral",
+    title: "Electrician required — outdoor",
+    prompt:
+      "One leg missing at the outdoor unit line side. This is a utility or breaker issue. Refer to a licensed electrician.",
+    capture: {
+      tag: "outdoor.electrician_referral",
+      type: "SELECT",
+      options: [
+        "Electrician called — noted",
+        "Recheck — both legs now present",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.contactor.hv_line_in") === "One leg missing" ||
+      ev(ctx, "outdoor.contactor.hv_line_in") === "Low or no voltage",
   },
 
   // High voltage LOAD side — skip if compressor running (proven passing through).
@@ -745,11 +875,33 @@ const NO_COOLING_STEPS: PackStep[] = [
       // Compressor running proves load side is good — skip
       if (sound === "Running — steady hum / vibration") return false;
       const lineIn = ev(ctx, "outdoor.contactor.hv_line_in");
-      // One leg missing at line side = electrician issue — stop here
-      if (lineIn === "One leg missing") return false;
-      if (lineIn === "Low or no voltage") return false;
+      // One leg missing or no voltage = electrician issue — stop here unless resolved
+      if (lineIn === "One leg missing" || lineIn === "Low or no voltage") {
+        return ev(ctx, "outdoor.electrician_referral") === "Recheck — both legs now present";
+      }
       return lineIn !== undefined;
     },
+  },
+
+  {
+    id: "outdoor_contactor_load_conclusion",
+    title: "Contactor contacts failed",
+    prompt:
+      "Line voltage present but not passing through load side — contactor contacts are burned or not making. Replace contactor.",
+    capture: {
+      tag: "repair.outdoor_contactor_load",
+      type: "SELECT",
+      options: [
+        "Contactor replaced — system restored",
+        "Issue persists",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.contactor.hv_load_out") === "One or both legs absent" ||
+      ev(ctx, "outdoor.contactor.hv_load_out") === "Significant voltage drop",
   },
 
   {
@@ -772,6 +924,48 @@ const NO_COOLING_STEPS: PackStep[] = [
     prereq: (ctx) =>
       ev(ctx, "outdoor.contactor.hv_load_out") === "Both legs passing" &&
       ev(ctx, "outdoor.compressor.sound") !== "Running — steady hum / vibration",
+  },
+
+  {
+    id: "safety_switch_reset",
+    title: "Reset safety switch — system restart?",
+    prompt:
+      "Identify which switch tripped and why. Manually reset the switch. Does system restart?",
+    hint: "A high pressure switch tripping indicates overcharge, dirty condenser coil, or blocked airflow. A low pressure switch tripping indicates low refrigerant charge or a restriction. Do not repeatedly reset — find the cause first.",
+    capture: {
+      tag: "outdoor.safety_switch_reset",
+      type: "SELECT",
+      options: [
+        "Yes — system running",
+        "No — switch trips again immediately",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.safety_switches") === "Pressure switch tripped" ||
+      ev(ctx, "outdoor.safety_switches") === "Other switch tripped",
+  },
+
+  {
+    id: "safety_switch_diagnosis",
+    title: "Switch trips immediately — pressure issue",
+    prompt:
+      "Safety switch trips on restart. Do not continue to reset. Check refrigerant pressures to identify cause — high pressure indicates blocked coil or overcharge, low pressure indicates low charge or restriction.",
+    capture: {
+      tag: "outdoor.safety_switch_diagnosis",
+      type: "SELECT",
+      options: [
+        "High pressure confirmed — check condenser coil",
+        "Low pressure confirmed — check charge",
+        "Unable to check pressures now",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "outdoor.safety_switch_reset") === "No — switch trips again immediately",
   },
 
   // ── CAPACITOR ────────────────────────────────────────────
@@ -797,7 +991,9 @@ const NO_COOLING_STEPS: PackStep[] = [
       sourceType: "OBSERVED",
     },
     requiresTool: false,
-    prereq: (ctx) => ev(ctx, "outdoor.compressor.sound") !== undefined,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.contactor.pulled") !== undefined ||
+      ev(ctx, "outdoor.compressor.sound") === "Running — steady hum / vibration",
   },
 
   {
@@ -821,6 +1017,27 @@ const NO_COOLING_STEPS: PackStep[] = [
     prereq: (ctx) => {
       return ev(ctx, "outdoor.capacitor.visual") !== undefined;
     },
+  },
+
+  {
+    id: "outdoor_capacitor_repair",
+    title: "Capacitor replaced — system restored?",
+    prompt:
+      "Replace run capacitor. Restore power. Are fan and compressor running normally?",
+    capture: {
+      tag: "repair.outdoor_capacitor",
+      type: "SELECT",
+      options: [
+        "Yes — both running",
+        "No — still not starting",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.capacitor.reading") === "Below spec" ||
+      ev(ctx, "outdoor.capacitor.reading") === "Open — no reading",
   },
 
   {
@@ -908,6 +1125,25 @@ const NO_COOLING_STEPS: PackStep[] = [
   },
 
   {
+    id: "hard_start_installed",
+    title: "Hard start kit installed — system verified?",
+    prompt:
+      "Install hard start kit. Verify compressor starts reliably on 3 consecutive cycles.",
+    capture: {
+      tag: "repair.hard_start",
+      type: "SELECT",
+      options: [
+        "Starts reliably — hard start resolved issue",
+        "Intermittent — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "outdoor.compressor.start_assist") === "Starts with assist — recommend hard start",
+  },
+
+  {
     id: "compressor_ohms",
     title: "Compressor windings — resistance check?",
     prompt:
@@ -926,6 +1162,25 @@ const NO_COOLING_STEPS: PackStep[] = [
     requiresTool: true,
     prereq: (ctx) =>
       ev(ctx, "outdoor.compressor.start_assist") === "Still won't start — further diagnosis needed",
+  },
+
+  {
+    id: "compressor_locked_rotor",
+    title: "Compressor — locked rotor or thermal overload?",
+    prompt:
+      "Windings check out but compressor won't start. Allow 2 hours for thermal overload to reset. Retry.",
+    capture: {
+      tag: "outdoor.compressor.locked_rotor",
+      type: "SELECT",
+      options: [
+        "Started after reset — thermal overload",
+        "Still won't start — locked rotor likely",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "outdoor.compressor.windings") === "All windings normal",
   },
 
   {
@@ -967,7 +1222,28 @@ const NO_COOLING_STEPS: PackStep[] = [
       sourceType: "OBSERVED",
     },
     requiresTool: false,
-    prereq: (ctx) => ev(ctx, "outdoor.compressor.failed") === "Confirmed — bad compressor",
+    prereq: (ctx) =>
+      ev(ctx, "outdoor.compressor.failed") === "Confirmed — bad compressor" ||
+      ev(ctx, "outdoor.compressor.locked_rotor") === "Still won't start — locked rotor likely",
+  },
+
+  {
+    id: "compressor_replacement_verified",
+    title: "Compressor replaced — system verified?",
+    prompt:
+      "Compressor replacement complete. Run system for 15 minutes. Verify pressures, delta-T, and no unusual sounds.",
+    capture: {
+      tag: "repair.compressor_replacement",
+      type: "SELECT",
+      options: [
+        "System verified — cooling confirmed",
+        "Issue persists — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => ev(ctx, "repair.compressor.authorization") === "Authorization obtained — proceeding",
   },
 
   // ── REFRIGERANT PRESSURES ────────────────────────────────
@@ -989,6 +1265,7 @@ const NO_COOLING_STEPS: PackStep[] = [
     requiresTool: true,
     prereq: (ctx) => {
       if (capacitorFailed(ctx)) return false;
+      if (ev(ctx, "outdoor.compressor.sound") !== "Running — steady hum / vibration") return false;
       return ev(ctx, "outdoor.capacitor.visual") !== undefined;
     },
   },
@@ -1035,6 +1312,29 @@ const NO_COOLING_STEPS: PackStep[] = [
   },
 
   {
+    id: "pressure_action",
+    title: "Pressure finding — action required?",
+    prompt:
+      "Based on pressure pattern — what action is needed?",
+    capture: {
+      tag: "refrigerant.pressure_action",
+      type: "SELECT",
+      options: [
+        "Check for restriction — metering device or line",
+        "Leak search required",
+        "Check condenser coil and charge",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) => {
+      const pattern = ev(ctx, "refrigerant.pressure_pattern");
+      return pattern !== undefined && pattern !== "Both pressures normal";
+    },
+  },
+
+  {
     id: "superheat_or_subcooling",
     title: "Superheat / subcooling — if conditions allow?",
     prompt:
@@ -1075,6 +1375,7 @@ const NO_COOLING_STEPS: PackStep[] = [
     requiresTool: true,
     prereq: (ctx) => {
       if (capacitorFailed(ctx)) return false;
+      if (ev(ctx, "outdoor.compressor.sound") !== "Running — steady hum / vibration") return false;
       return ev(ctx, "outdoor.capacitor.visual") !== undefined;
     },
   },
@@ -1094,6 +1395,99 @@ const NO_COOLING_STEPS: PackStep[] = [
     },
     requiresTool: true,
     prereq: (ctx) => ev(ctx, "airflow.supply_temp_f") !== undefined,
+  },
+
+  {
+    id: "repair_followup",
+    title: "Follow up required",
+    prompt:
+      "Repair did not resolve the issue. Document the situation and schedule follow up.",
+    capture: {
+      tag: "repair.followup",
+      type: "SELECT",
+      options: [
+        "Follow up scheduled",
+        "Quote pending — authorization needed",
+        "Referred to specialist",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      ev(ctx, "repair.transformer") === "No — further diagnosis needed" ||
+      ev(ctx, "repair.blower_motor") === "No — further diagnosis needed" ||
+      ev(ctx, "repair.control_board") === "No — further diagnosis needed" ||
+      ev(ctx, "repair.thermostat") === "No — further diagnosis needed" ||
+      ev(ctx, "repair.contactor") === "No — further diagnosis needed" ||
+      ev(ctx, "repair.controls") === "No — further diagnosis needed" ||
+      ev(ctx, "repair.fan_motor") === "No — further diagnosis needed" ||
+      ev(ctx, "indoor.fuse_repair") === "Further diagnosis needed" ||
+      ev(ctx, "repair.blower_capacitor") === "No — further diagnosis needed" ||
+      ev(ctx, "repair.outdoor_capacitor") === "No — still not starting" ||
+      ev(ctx, "repair.outdoor_contactor_load") === "Issue persists" ||
+      ev(ctx, "repair.hard_start") === "Intermittent — further diagnosis needed" ||
+      ev(ctx, "repair.condensate") === "No — drain still blocked" ||
+      ev(ctx, "repair.fuse_unknown") === "Issue persists" ||
+      ev(ctx, "repair.verified") === "Issue persists — further diagnosis needed" ||
+      ev(ctx, "indoor.electrician_referral") === "Noted — electrician called" ||
+      ev(ctx, "outdoor.electrician_referral") === "Electrician called — noted" ||
+      ev(ctx, "outdoor.safety_switch_diagnosis") === "High pressure confirmed — check condenser coil" ||
+      ev(ctx, "outdoor.safety_switch_diagnosis") === "Low pressure confirmed — check charge" ||
+      ev(ctx, "outdoor.safety_switch_diagnosis") === "Unable to check pressures now" ||
+      ev(ctx, "outdoor.compressor.locked_rotor") === "Still won't start — locked rotor likely" ||
+      ev(ctx, "repair.compressor.authorization") === "Authorization declined — system down" ||
+      ev(ctx, "repair.compressor.authorization") === "Quote pending — follow up needed" ||
+      ev(ctx, "refrigerant.pressure_action") === "Check for restriction — metering device or line" ||
+      ev(ctx, "refrigerant.pressure_action") === "Leak search required" ||
+      ev(ctx, "refrigerant.pressure_action") === "Check condenser coil and charge" ||
+      ev(ctx, "repair.compressor_replacement") === "Issue persists — further diagnosis needed",
+  },
+
+  {
+    id: "system_verified",
+    title: "System operation verified?",
+    prompt:
+      "Repair complete. Verify system is operating normally — cooling confirmed, no unusual sounds, pressures normal if gauges were used.",
+    capture: {
+      tag: "repair.verified",
+      type: "SELECT",
+      options: [
+        "System verified — operating normally",
+        "Issue persists — further diagnosis needed",
+      ],
+      required: false,
+      sourceType: "OBSERVED",
+    },
+    requiresTool: false,
+    prereq: (ctx) =>
+      (ev(ctx, "repair.transformer") ?? "").startsWith("Yes") ||
+      (ev(ctx, "repair.blower_motor") ?? "").startsWith("Yes") ||
+      (ev(ctx, "repair.control_board") ?? "").startsWith("Yes") ||
+      (ev(ctx, "repair.thermostat") ?? "").startsWith("Yes") ||
+      (ev(ctx, "repair.contactor") ?? "").startsWith("Yes") ||
+      (ev(ctx, "repair.controls") ?? "").startsWith("Yes") ||
+      (ev(ctx, "repair.fan_motor") ?? "").startsWith("Yes") ||
+      ev(ctx, "indoor.fuse_repair") === "Fuse replaced — system restored" ||
+      ev(ctx, "repair.blower_capacitor") === "Yes — blower running" ||
+      ev(ctx, "repair.outdoor_capacitor") === "Yes — both running" ||
+      ev(ctx, "repair.outdoor_contactor_load") === "Contactor replaced — system restored" ||
+      ev(ctx, "repair.hard_start") === "Starts reliably — hard start resolved issue" ||
+      ev(ctx, "repair.condensate") === "Yes — system restored" ||
+      ev(ctx, "repair.fuse_unknown") === "Board replaced — system restored" ||
+      ev(ctx, "outdoor.safety_switch_reset") === "Yes — system running" ||
+      ev(ctx, "indoor.blower.motor.conclusion") === "Blower now running — recheck" ||
+      ev(ctx, "indoor.control_board.conclusion") === "Recheck — relay now responding" ||
+      ev(ctx, "indoor.thermostat.conclusion") === "Recheck — system now responding" ||
+      ev(ctx, "outdoor.contactor.conclusion") === "Recheck — contactor now pulled" ||
+      ev(ctx, "outdoor.controls.conclusion") === "Recheck — voltage now present" ||
+      ev(ctx, "outdoor.fan.motor") === "Fan was spinning" ||
+      ev(ctx, "outdoor.fan.motor.conclusion") === "Fan now running — recheck" ||
+      ev(ctx, "outdoor.compressor.failed") === "Windings normal — recheck" ||
+      ev(ctx, "indoor.no_power_recheck") === "Yes — system restored" ||
+      ev(ctx, "outdoor.compressor.start_assist") === "Not applicable — compressor running" ||
+      ev(ctx, "outdoor.compressor.locked_rotor") === "Started after reset — thermal overload" ||
+      ev(ctx, "repair.compressor_replacement") === "System verified — cooling confirmed",
   },
 ];
 
@@ -1524,6 +1918,32 @@ const conditionMapFns: ConditionMapFn[] = [
       return { condition: C.UNKNOWN, weight: 2 };
     if (tag === "repair.transformer" && value === "No — further diagnosis needed")
       return { condition: C.UNKNOWN, weight: 2 };
+    if (tag === "repair.verified" && value === "Issue persists — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 3 };
+    if (tag === "indoor.fuse_no_cause" && value === "Unable to determine — recommend control board replacement")
+      return { condition: C.ELECTRICAL, weight: 3 };
+    if (tag === "outdoor.safety_switch_reset" && value === "No — switch trips again immediately")
+      return { condition: C.REFRIGERANT, weight: 4 };
+    if (tag === "repair.blower_capacitor" && value === "No — further diagnosis needed")
+      return { condition: C.UNKNOWN, weight: 2 };
+    if (tag === "repair.condensate" && value === "No — drain still blocked")
+      return { condition: C.DRAINAGE, weight: 4 };
+    if (tag === "outdoor.electrician_referral")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "repair.outdoor_contactor_load" && value === "Issue persists")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "repair.outdoor_contactor_load" && value === "Contactor replaced — system restored")
+      return { condition: C.ELECTRICAL, weight: 5 };
+    if (tag === "outdoor.compressor.locked_rotor" && value === "Still won't start — locked rotor likely")
+      return { condition: C.MECHANICAL, weight: 5 };
+    if (tag === "refrigerant.pressure_action" && value === "Leak search required")
+      return { condition: C.REFRIGERANT, weight: 5 };
+    if (tag === "refrigerant.pressure_action" && value === "Check for restriction — metering device or line")
+      return { condition: C.REFRIGERANT, weight: 4 };
+    if (tag === "outdoor.safety_switch_diagnosis" && value === "High pressure confirmed — check condenser coil")
+      return { condition: C.REFRIGERANT, weight: 4 };
+    if (tag === "outdoor.safety_switch_diagnosis" && value === "Low pressure confirmed — check charge")
+      return { condition: C.REFRIGERANT, weight: 5 };
 
     return null;
   },

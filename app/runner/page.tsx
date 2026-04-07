@@ -287,6 +287,7 @@ const TAG_LABELS: Record<string, string> = {
   "drainage.secondary_pan.water_level": "Secondary pan water",
   "drainage.primary_drain.flow": "Primary drain flow",
   "indoor.coil.iced": "Evaporator coil iced",
+  "repair.outcome": "Repair performed",
 };
 
 // ─── Report Field ────────────────────────────────────────────
@@ -1138,6 +1139,8 @@ type ExpressFormState = {
   capacitorReading: string; suctionPsi: string; headPsi: string; pressurePattern: string;
   // conclusion
   primaryCondition: string; notes: string;
+  // repair outcome
+  repairOutcome: string; componentReplaced: string; repairFollowup: string;
 };
 
 const EXPRESS_EMPTY: ExpressFormState = {
@@ -1148,6 +1151,7 @@ const EXPRESS_EMPTY: ExpressFormState = {
   fanRunning: "", compressorSound: "", capacitorVisual: "",
   capacitorReading: "", suctionPsi: "", headPsi: "", pressurePattern: "",
   primaryCondition: "", notes: "",
+  repairOutcome: "", componentReplaced: "", repairFollowup: "",
 };
 
 function ExpressSelect({ label, value, options, onChange }: {
@@ -1201,6 +1205,30 @@ function ExpressScreen({
 
   const set = (k: keyof ExpressFormState) => (v: string) => setD((prev) => ({ ...prev, [k]: v }));
 
+  function clearDownstream(field: keyof ExpressFormState, value: string): Partial<ExpressFormState> {
+    const outdoor: Partial<ExpressFormState> = {
+      fanRunning: "", compressorSound: "", capacitorVisual: "",
+      capacitorReading: "", suctionPsi: "", headPsi: "", pressurePattern: "",
+    };
+    const indoorElectrical: Partial<ExpressFormState> = {
+      lowVoltage: "", highVoltage: "", transformer: "", fuse: "",
+    };
+    if (field === "thermostatResponse") {
+      return { airflowAtFilter: "", filterCondition: "", ...indoorElectrical, ...outdoor };
+    }
+    if (field === "airflowAtFilter") {
+      if (value === "No airflow") return { filterCondition: "", ...outdoor };
+      return { filterCondition: "", ...indoorElectrical };
+    }
+    if (field === "fanRunning" || field === "compressorSound") {
+      return { capacitorVisual: "", capacitorReading: "", suctionPsi: "", headPsi: "", pressurePattern: "" };
+    }
+    if (field === "capacitorReading" && (value === "Below spec" || value === "Open — no reading")) {
+      return { suctionPsi: "", headPsi: "", pressurePattern: "" };
+    }
+    return {};
+  }
+
   // ── Auto-suggest primary condition ─────────────────────────
   let suggestedCondition = "";
   if (d.capacitorVisual === "Obvious failure — bulging or oil" || d.capacitorReading === "Below spec" || d.capacitorReading === "Open — no reading") {
@@ -1248,6 +1276,11 @@ function ExpressScreen({
       add("refrigerant.pressure_pattern", d.pressurePattern, "OBSERVED");
     }
     if (d.notes.trim()) add("express.notes", d.notes, "REPORTED");
+    add("repair.outcome", d.repairOutcome, "OBSERVED");
+    if ((d.repairOutcome === "Component replaced — system restored" || d.repairOutcome === "Component replaced — further diagnosis needed") && d.componentReplaced.trim())
+      add("repair.component_replaced", d.componentReplaced, "OBSERVED");
+    if ((d.repairOutcome === "Component replaced — further diagnosis needed" || d.repairOutcome === "Quote provided — authorization pending" || d.repairOutcome === "Referred to electrician") && d.repairFollowup)
+      add("repair.followup", d.repairFollowup, "OBSERVED");
 
     const jobInfo: JobInfo = {
       technicianName: d.technicianName,
@@ -1335,24 +1368,11 @@ function ExpressScreen({
           <div>
             <p className="text-sm font-mono font-bold text-white uppercase tracking-widest mb-3 border-b border-zinc-600 pb-2">Indoor</p>
             <div className="flex flex-col gap-4">
-              <ExpressSelect label="Thermostat response" value={d.thermostatResponse} onChange={set("thermostatResponse")}
+              <ExpressSelect label="Thermostat response" value={d.thermostatResponse} onChange={(v) =>
+                setD((prev) => ({ ...prev, thermostatResponse: v, ...clearDownstream("thermostatResponse", v) }))}
                 options={["Blower starts", "Nothing responds", "Already running"]} />
-              <ExpressSelect label="Airflow at return" value={d.airflowAtFilter} onChange={(v) => {
-                if (v === "No airflow") {
-                  setD((prev) => ({
-                    ...prev,
-                    airflowAtFilter: v,
-                    fanRunning: "", compressorSound: "", capacitorVisual: "",
-                    capacitorReading: "", suctionPsi: "", headPsi: "", pressurePattern: "",
-                  }));
-                } else {
-                  setD((prev) => ({
-                    ...prev,
-                    airflowAtFilter: v,
-                    lowVoltage: "", highVoltage: "", transformer: "", fuse: "",
-                  }));
-                }
-              }}
+              <ExpressSelect label="Airflow at return" value={d.airflowAtFilter} onChange={(v) =>
+                setD((prev) => ({ ...prev, airflowAtFilter: v, ...clearDownstream("airflowAtFilter", v) }))}
                 options={["Strong and steady", "Weak", "No airflow"]} />
               {d.airflowAtFilter !== "" && d.airflowAtFilter !== "No airflow" && (
                 <ExpressSelect label="Filter condition" value={d.filterCondition} onChange={set("filterCondition")}
@@ -1388,16 +1408,19 @@ function ExpressScreen({
               <div>
                 <p className="text-sm font-mono font-bold text-white uppercase tracking-widest mb-3 border-b border-zinc-600 pb-2">Outdoor</p>
                 <div className="flex flex-col gap-4">
-                  <ExpressSelect label="Condenser fan" value={d.fanRunning} onChange={set("fanRunning")}
+                  <ExpressSelect label="Condenser fan" value={d.fanRunning} onChange={(v) =>
+                    setD((prev) => ({ ...prev, fanRunning: v, ...clearDownstream("fanRunning", v) }))}
                     options={["Running", "Not running"]} />
-                  <ExpressSelect label="Compressor" value={d.compressorSound} onChange={set("compressorSound")}
+                  <ExpressSelect label="Compressor" value={d.compressorSound} onChange={(v) =>
+                    setD((prev) => ({ ...prev, compressorSound: v, ...clearDownstream("compressorSound", v) }))}
                     options={["Running — steady hum / vibration", "Attempting but not starting", "Silent — no attempt"]} />
                   {d.fanRunning !== "" && d.compressorSound !== "" && (
                     <ExpressSelect label="Capacitor visual" value={d.capacitorVisual} onChange={set("capacitorVisual")}
                       options={["Normal — no visible damage", "Obvious failure — bulging or oil", "Burn marks or discoloration"]} />
                   )}
                   {d.fanRunning !== "" && d.compressorSound !== "" && d.capacitorVisual !== "Obvious failure — bulging or oil" && (
-                    <ExpressSelect label="Capacitor reading" value={d.capacitorReading} onChange={set("capacitorReading")}
+                    <ExpressSelect label="Capacitor reading" value={d.capacitorReading} onChange={(v) =>
+                      setD((prev) => ({ ...prev, capacitorReading: v, ...clearDownstream("capacitorReading", v) }))}
                       options={["Within spec", "Below spec", "Open — no reading"]} />
                   )}
                   {d.compressorSound === "Running — steady hum / vibration" && d.capacitorReading !== "Below spec" && d.capacitorReading !== "Open — no reading" && (
@@ -1448,6 +1471,34 @@ function ExpressScreen({
                 <input type="text" value={d.notes} onChange={(e) => set("notes")(e.target.value)}
                   placeholder="Any additional observations" className="w-full px-4 py-3 bg-zinc-900 border border-zinc-600 text-white font-mono text-sm focus:outline-none focus:border-zinc-400" />
               </div>
+            </div>
+          </div>
+
+          <div className="border-t border-zinc-700" />
+
+          {/* Section 6 — Repair Outcome */}
+          <div>
+            <p className="text-sm font-mono font-bold text-white uppercase tracking-widest mb-3 border-b border-zinc-600 pb-2">Repair Outcome</p>
+            <div className="flex flex-col gap-4">
+              <ExpressSelect label="Repair performed?" value={d.repairOutcome} onChange={set("repairOutcome")}
+                options={[
+                  "Component replaced — system restored",
+                  "Component replaced — further diagnosis needed",
+                  "Quote provided — authorization pending",
+                  "Referred to electrician",
+                  "Diagnosis only — no repair performed",
+                ]} />
+              {(d.repairOutcome === "Component replaced — system restored" || d.repairOutcome === "Component replaced — further diagnosis needed") && (
+                <div>
+                  <p className="text-xs font-mono font-bold text-zinc-300 uppercase tracking-wider mb-1">Component replaced</p>
+                  <input type="text" value={d.componentReplaced} onChange={(e) => set("componentReplaced")(e.target.value)}
+                    placeholder="e.g. run capacitor, transformer, contactor" className="w-full px-4 py-3 bg-zinc-900 border border-zinc-600 text-white font-mono text-sm focus:outline-none focus:border-zinc-400" />
+                </div>
+              )}
+              {(d.repairOutcome === "Component replaced — further diagnosis needed" || d.repairOutcome === "Quote provided — authorization pending" || d.repairOutcome === "Referred to electrician") && (
+                <ExpressSelect label="Follow up needed?" value={d.repairFollowup} onChange={set("repairFollowup")}
+                  options={["Yes — scheduled", "Yes — pending", "No"]} />
+              )}
             </div>
           </div>
 
